@@ -1,0 +1,39 @@
+name: Deploy LedgerMail to Netlify
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'netlify.toml'
+      - '.github/workflows/netlify.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: netlify-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout LedgerMail
+        uses: actions/checkout@v4
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate app source and contracts
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+          node web/tests.mjs
+      - name: Publish via official Netlify MCP
+        env:
+          NETLIFY_MCP_PROXY_PATH: ${{ secrets.NETLIFY_MCP_PROXY_PATH }}
+        run: |
+          if [ -z "$NETLIFY_MCP_PROXY_PATH" ]; then
+            echo "::error::NETLIFY_MCP_PROXY_PATH secret is missing."
+            exit 1
+          fi
+          npx -y @netlify/mcp@latest --site-id 7b8186a6-48ed-4873-83f3-19a2210b344f --proxy-path "$NETLIFY_MCP_PROXY_PATH"

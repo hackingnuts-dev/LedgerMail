@@ -1,16 +1,9 @@
-name: LedgerMail PWA Checks and Pages
+name: LedgerMail PWA static checks
 on:
-  push:
-    branches: [main]
-    paths: ['web/**', '.github/workflows/pages.yml']
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
-concurrency:
-  group: pages
-  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,17 +14,3 @@ jobs:
           node-version: '22'
       - run: node --check web/app.js && node --check web/sw.js
       - run: node web/tests.mjs
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./web
-      - id: deployment
-        uses: actions/deploy-pages@v4
