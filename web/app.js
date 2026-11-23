@@ -9,8 +9,66 @@ const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const toast=s=>{const node=el('toast');node.textContent=s;node.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>node.style.display='none',3500)};
 const getClientId=()=>localStorage.getItem('ledgermail.clientId')||'';
 function setPhase(phase){state.phase=phase;el('authStatus').textContent=({DISCONNECTED:'Not connected',CONNECTING:'Waiting for Google authorization…',VERIFYING:'Checking Google account identity…',CONNECTED:('Connected: '+(state.email||'Gmail')),EXPIRED:'Google access expired. Connect again.',ERROR:'Connection failed. Try again.'})[phase]||phase;el('connect').disabled=phase==='CONNECTING';el('sync').disabled=phase!=='CONNECTED'||state.syncPhase==='RUNNING'}
-function route(name){if(!el(name))return;document.querySelectorAll('.screen').forEach(n=>n.classList.toggle('active',n.id===name));document.querySelectorAll('.nav').forEach(n=>{n.classList.toggle('active',n.dataset.route===name)});window.scrollTo(0,0)}
-document.querySelectorAll('[data-route]').forEach(b=>b.addEventListener('click',()=>route(b.dataset.route)));
+/* Explicit navigation transition: one active screen, one selected tab, and one noninteractive burst. */
+const prefersLessMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
+function route(name,event){
+  const target=el(name);
+  if(!target||!target.classList.contains('screen'))return;
+  const active=document.querySelector('.screen.active');
+  if(active?.id===name)return;
+  document.querySelectorAll('.screen').forEach(screen=>{
+    const selected=screen===target;
+    screen.classList.toggle('active',selected);
+    screen.setAttribute('aria-hidden',String(!selected));
+  });
+  const tabs=[...document.querySelectorAll('nav .nav')];
+  tabs.forEach(tab=>{
+    const selected=tab.dataset.route===name;
+    tab.classList.toggle('active',selected);
+    if(selected)tab.setAttribute('aria-current','page');
+    else tab.removeAttribute('aria-current');
+  });
+  document.querySelector('nav').style.setProperty('--nav-index',String(Math.max(0,tabs.findIndex(t=>t.dataset.route===name))));
+  document.body.dataset.section=name;
+  window.scrollTo(0,0);
+  if(!prefersLessMotion.matches){
+    const burst=el('transitionSplash');
+    const rect=event?.currentTarget?.getBoundingClientRect();
+    const x=rect?rect.left+rect.width/2:window.innerWidth/2;
+    const y=rect?rect.top+rect.height/2:window.innerHeight*.82;
+    burst.style.setProperty('--burst-x',(x/window.innerWidth*100).toFixed(1)+'%');
+    burst.style.setProperty('--burst-y',(y/window.innerHeight*100).toFixed(1)+'%');
+    burst.classList.remove('burst');
+    void burst.offsetWidth;
+    burst.classList.add('burst');
+  }
+}
+document.querySelectorAll('[data-route]').forEach(b=>b.addEventListener('click',e=>route(b.dataset.route,e)));
+/* Reduced-motion aware scroll parallax + pointer tilt; no gyroscope access requested. */
+const heroPanel=document.querySelector('.hero');
+if(heroPanel){
+  heroPanel.addEventListener('pointermove',e=>{
+    if(prefersLessMotion.matches||e.pointerType==='touch')return;
+    const rect=heroPanel.getBoundingClientRect();
+    const dx=((e.clientX-rect.left)/rect.width-.5)*5;
+    const dy=((e.clientY-rect.top)/rect.height-.5)*-4;
+    heroPanel.style.setProperty('--hero-tilt-x',dy.toFixed(2)+'deg');
+    heroPanel.style.setProperty('--hero-tilt-y',dx.toFixed(2)+'deg');
+  },{passive:true});
+  heroPanel.addEventListener('pointerleave',()=>{
+    heroPanel.style.setProperty('--hero-tilt-x','0deg');
+    heroPanel.style.setProperty('--hero-tilt-y','0deg');
+  });
+}
+let scrollFramePending=false;
+window.addEventListener('scroll',()=>{
+  if(prefersLessMotion.matches||scrollFramePending)return;
+  scrollFramePending=true;
+  requestAnimationFrame(()=>{
+    document.documentElement.style.setProperty('--scroll-parallax',Math.min(90,window.scrollY*.14).toFixed(1)+'px');
+    scrollFramePending=false;
+  });
+},{passive:true});
 el('settingsShortcut').onclick=()=>route('settings');
 function resetSession(){state.generation++;state.controller?.abort();state.controller=null;state.token=null;state.email=null;state.expiresAt=0;state.messages=[];state.payments=[];state.bills=[];state.pageToken=null;state.mailBusy=false;state.syncPhase='IDLE';el('syncStatus').textContent='Not synchronized';setPhase('DISCONNECTED');render()}
 function disconnect(){const token=state.token;resetSession();if(token&&window.google?.accounts?.oauth2?.revoke)google.accounts.oauth2.revoke(token,()=>{});toast('Session disconnected and cleared')}
@@ -35,5 +93,5 @@ function render(){const now=new Date();const current=monthKey(now);const selecte
 function renderPayments(){const q=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;const list=state.payments.filter(x=>(month==='all'||monthKey(x.date)===month)&&(x.merchant+' '+x.subject).toLowerCase().includes(q));el('confirmedTotal').textContent=money(list.filter(x=>x.status==='CONFIRMED').reduce((sum,x)=>sum+x.amount,0));const node=el('paymentList');node.replaceChildren();if(!list.length){node.className='empty';node.textContent='No matching payments'}else{node.className='';list.forEach(x=>node.append(itemCard(x)))}}
 el('paymentSearch').oninput=renderPayments;el('monthSelect').onchange=renderPayments;
 el('saveClient').onclick=()=>{const v=el('clientId').value.trim();if(!/^\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(v)){toast('Invalid Google Web OAuth client ID');return}localStorage.setItem('ledgermail.clientId',v);toast('Public OAuth client ID saved on this device')};
-el('connect').onclick=connect;el('disconnect').onclick=disconnect;el('clear').onclick=()=>{resetSession();toast('Session data cleared')};el('sync').onclick=()=>syncFinancial();el('searchMail').onclick=()=>{state.mailQuery=el('mailSearch').value.trim()||'in:anywhere newer_than:90d';state.pageToken=null;loadMail(false)};el('mailSearch').onkeydown=e=>{if(e.key==='Enter')el('searchMail').click()};el('loadMore').onclick=()=>loadMail(true);el('closeDialog').onclick=()=>el('mailDialog').close();el('clientId').value=getClientId();setPhase('DISCONNECTED');render();
+el('connect').onclick=connect;el('disconnect').onclick=disconnect;el('clear').onclick=()=>{resetSession();toast('Session data cleared')};el('sync').onclick=()=>syncFinancial();el('searchMail').onclick=()=>{state.mailQuery=el('mailSearch').value.trim()||'in:anywhere newer_than:90d';state.pageToken=null;loadMail(false)};el('mailSearch').onkeydown=e=>{if(e.key==='Enter')el('searchMail').click()};el('loadMore').onclick=()=>loadMail(true);el('closeDialog').onclick=()=>el('mailDialog').close();el('clientId').value=getClientId();document.body.dataset.section='dashboard';document.querySelector('.nav.active')?.setAttribute('aria-current','page');setPhase('DISCONNECTED');render();
 if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
