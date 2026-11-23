@@ -15,7 +15,7 @@ function snapshot(data){
  });
  const cleanCandidate=c=>{
    const x={};
-   for(const key of ['key','messageId','merchant','subject','date','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt']){
+   for(const key of ['key','messageId','merchant','subject','date','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion']){
      const value=c[key];x[key]=value==null?null:String(value).slice(0,key==='source'?650:450);
    }
    x.amount=Number(c.amount)||0;

@@ -4,7 +4,10 @@
 const STATES=Object.freeze({
  auth:{DISCONNECTED:['CONNECTING','DISCONNECTED'],CONNECTING:['VERIFYING','ERROR','DISCONNECTED'],VERIFYING:['CONNECTED','ERROR','DISCONNECTED','EXPIRED'],CONNECTED:['EXPIRED','DISCONNECTED','CONNECTING'],EXPIRED:['CONNECTING','DISCONNECTED','ERROR'],ERROR:['CONNECTING','DISCONNECTED']},
  sync:{IDLE:['RUNNING','IDLE'],RUNNING:['COMPLETE','PARTIAL','ERROR','IDLE'],COMPLETE:['RUNNING','IDLE'],PARTIAL:['RUNNING','IDLE'],ERROR:['RUNNING','IDLE']},
- storage:{BOOTING:['LOADING','ERROR'],LOADING:['READY','ERROR'],READY:['LOADING','SAVING','ERROR'],SAVING:['READY','ERROR','SAVING'],ERROR:['LOADING','ERROR']}
+ storage:{BOOTING:['LOADING','ERROR'],LOADING:['READY','ERROR'],READY:['LOADING','SAVING','ERROR'],SAVING:['READY','ERROR','SAVING'],ERROR:['LOADING','ERROR']},
+ navigation:Object.fromEntries(['dashboard','payments','bills','inbox','settings'].map(k=>[k,['dashboard','payments','bills','inbox','settings']])),
+ inbox:{IDLE:['LOADING','IDLE'],LOADING:['READY','ERROR','IDLE'],READY:['LOADING','IDLE'],ERROR:['LOADING','IDLE']},
+ backup:{IDLE:['EXPORTING','READING','IDLE'],EXPORTING:['DONE','ERROR'],READING:['VALIDATING','ERROR'],VALIDATING:['WRITING','ERROR'],WRITING:['DONE','ERROR'],DONE:['IDLE','READING','EXPORTING'],ERROR:['IDLE','READING','EXPORTING']}
 });
 const REVIEW_STATES=['REVIEW','PAID','DUE','IGNORED'];
 const REVIEW_TRANSITIONS={
@@ -29,6 +32,8 @@ const BLOCKED=/\b(otp|one[- ]time (password|passcode|code)|verification code|sec
 const BILL=/(statement (available|ready|is here)|billing statement|bill (available|ready|due)|amount due|minimum (payment|due)|payment due|due date|total due|upcoming payment|payment reminder|invoice due|outstanding balance)/i;
 const CONFIRMED_PAYMENT=/(payment (received|successful|completed|processed|confirmed|made)|you (paid|spent|sent)|paid (successfully|in full)|autopay (processed|complete)|receipt (for|from|#)|purchase (confirmed|completed)|order (paid|completed)|card (charged|debited)|account (debited|charged)|transfer (completed|sent)|charge (posted|confirmed))/i;
 const RECEIPT=/(payment|purchase|receipt|paid|charged|debited|spent|order confirmed|transaction completed|transfer complete)/i;
+const PAID_PROOF=/\b(payment (received|successful|completed|processed|confirmed)|paid successfully|we received your payment|thank you for (your )?payment|card was charged|purchase was completed)\b/i;
+const DUE_SIGNAL=/\b(amount due|minimum (amount )?(payment|due)|payment due|total due|outstanding balance|payment reminder)\b/i;
 const AMOUNT=/(?:USD\s*|US\$\s*|\$\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
 const INR=/(?:INR\s*|₹\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
 const GBP=/(?:GBP\s*|£\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
@@ -83,8 +88,11 @@ function parseEmail(m){
    merchant:String(m.sender||'Unknown').split('<')[0].trim().slice(0,70)||'Unknown sender',
    subject:String(m.subject||'(No subject)'),date:date.toISOString(),
    amount,currency:hit.currency,category:category(text),kind,
-   status:'REVIEW',evidence:kind==='BILL'?'Statement/bill email (payment unverified)':
-       CONFIRMED_PAYMENT.test(text)?'Payment-like email (verify settlement)':'Possible purchase or receipt',
+   status:'REVIEW',suggestedStatus:kind==='BILL'?(DUE_SIGNAL.test(text)?'POSSIBLY_DUE':'STATEMENT_ONLY'):(PAID_PROOF.test(text)?'LIKELY_PAID':'PURCHASE_UNVERIFIED'),
+   reviewSuggestion:kind==='BILL'?(DUE_SIGNAL.test(text)?'Email mentions an amount due. Check whether a later payment settled it.':'Statement received. Payment status unknown.'):
+     (PAID_PROOF.test(text)?'Email claims payment completed. Confirm against your account.':'A purchase or receipt was detected. Check whether it settled.'),
+   evidence:kind==='BILL'?'Bill/statement email — payment status unverified':
+       PAID_PROOF.test(text)?'Payment-confirmation wording detected':'Possible purchase or receipt',
    source:String(m.snippet||'').slice(0,650),
    dueDate:kind==='BILL'?dueDate(text,date.getUTCFullYear()):null
  };
