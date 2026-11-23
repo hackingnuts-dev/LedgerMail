@@ -31,8 +31,17 @@ function setSyncPhase(next){
  state.syncPhase=E.transition('sync',state.syncPhase,next);
  el('sync').disabled=state.phase!=='CONNECTED'||state.syncPhase==='RUNNING';
 }
-function setMailPhase(next){state.mailPhase=E.transition('inbox',state.mailPhase,next);state.mailBusy=next==='LOADING'}
-function setBackupPhase(next){state.backupPhase=E.transition('backup',state.backupPhase,next)}
+function setMailPhase(next){
+ state.mailPhase=E.transition('inbox',state.mailPhase,next);
+ state.mailBusy=next==='LOADING';
+ el('searchMail').disabled=state.mailBusy;
+ el('loadMore').disabled=state.mailBusy;
+}
+function setBackupPhase(next){
+ state.backupPhase=E.transition('backup',state.backupPhase,next);
+ const busy=['READING','VALIDATING','WRITING','EXPORTING'].includes(next);
+ el('exportBackup').disabled=busy;el('importBackup').disabled=busy;
+}
 function setStoragePhase(next){state.storagePhase=E.transition('storage',state.storagePhase,next);updateStorageBanner()}
 function updateStorageBanner(){
  const id=state.email;
@@ -433,6 +442,9 @@ el('clear').onclick=async()=>{
  if(!state.email){toast('No saved account selected');return}
  if(!confirm('Delete saved financial history for '+state.email+' from this device? This cannot be undone.'))return;
  const account=state.email;
+ state.generation++;state.controller?.abort();state.controller=null;
+ if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
+ if(state.mailPhase!=='IDLE')setMailPhase('IDLE');
  try{
    await Store.remove(account);
    state.messages=[];state.payments=[];state.bills=[];state.lastSync=null;
@@ -446,27 +458,37 @@ el('loadMore').onclick=()=>loadMail(true);
 el('closeDialog').onclick=()=>el('mailDialog').close();
 el('exportBackup').onclick=()=>{
  if(!state.email){toast('No selected Gmail history to export');return}
- const json=JSON.stringify({...Store.snapshot(getAccountRecord()),backupType:'LedgerMail-v4'});
- const blob=new Blob([json],{type:'application/json'}),url=URL.createObjectURL(blob);
- const link=document.createElement('a');link.href=url;
- link.download='LedgerMail-'+state.email.replace(/[^a-z0-9.-]/gi,'_')+'-'+new Date().toISOString().slice(0,10)+'.json';
- link.click();setTimeout(()=>URL.revokeObjectURL(url),3000);
- toast('Backup contains sensitive transaction details. Store privately.');
+ setBackupPhase('EXPORTING');
+ try{
+   const json=JSON.stringify({...Store.snapshot(getAccountRecord()),backupType:'LedgerMail-v4'});
+   const blob=new Blob([json],{type:'application/json'}),url=URL.createObjectURL(blob);
+   const link=document.createElement('a');link.href=url;
+   link.download='LedgerMail-'+state.email.replace(/[^a-z0-9.-]/gi,'_')+'-'+new Date().toISOString().slice(0,10)+'.json';
+   link.click();setTimeout(()=>URL.revokeObjectURL(url),3000);
+   setBackupPhase('DONE');
+   toast('Backup includes sensitive financial details. Keep it private.');
+ }catch(err){setBackupPhase('ERROR');toast('Export failed: '+err.message)}
 };
 el('importBackup').onclick=()=>el('backupFile').click();
 el('backupFile').onchange=async()=>{
  const file=el('backupFile').files?.[0];el('backupFile').value='';
- if(!file)return;if(file.size>12_000_000){toast('Backup is too large');return}
+ if(!file)return;
+ if(file.size>12_000_000){toast('Backup exceeds 12 MB limit');return}
+ setBackupPhase('READING');
  try{
    const raw=JSON.parse(await file.text());
+   setBackupPhase('VALIDATING');
    if(raw.version!==4||!raw.email)throw Error('Not a LedgerMail v4 backup');
    const record=Store.snapshot(raw);
-   if(!confirm('Restore financial history for '+record.email+'? Existing saved data for that account will be replaced.'))return;
+   if(!confirm('Restore financial history for '+record.email+'? It will replace saved records for that account.')){
+     setBackupPhase('IDLE');return;
+   }
+   setBackupPhase('WRITING');
    if(state.phase==='CONNECTED')disconnect();
    await Store.write(record);await Store.setLastEmail(record.email);
-   applyAccount(record,record.email);
-   setPhase('DISCONNECTED');toast('Backup restored. Reconnect Gmail to sync newer emails.');
- }catch(err){toast('Backup restore failed: '+err.message)}
+   applyAccount(record,record.email);setPhase('DISCONNECTED');
+   setBackupPhase('DONE');toast('Local history restored. Reconnect Gmail for new messages.');
+ }catch(err){setBackupPhase('ERROR');toast('Backup restore failed: '+err.message)}
 };
 el('clientId').value=getClientId();
 document.body.dataset.section='dashboard';document.querySelector('.nav.active')?.setAttribute('aria-current','page');
