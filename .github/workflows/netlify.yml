@@ -28,6 +28,10 @@ jobs:
           node --check web/app.js
           node --check web/sw.js
           node web/tests.mjs
+      - name: Generate iPhone Home Screen and PWA PNG icons
+        run: |
+          python -m pip install --disable-pip-version-check --quiet CairoSVG==2.7.1
+          python -c 'import cairosvg; [cairosvg.svg2png(url="web/icon.svg", write_to="web/"+name, output_width=size, output_height=size) for name,size in [("apple-touch-icon.png",180),("icon-192.png",192),("icon-512.png",512)]]'
       - name: Publish via official Netlify MCP
         env:
           NETLIFY_MCP_PROXY_PATH: ${{ secrets.NETLIFY_MCP_PROXY_PATH }}
