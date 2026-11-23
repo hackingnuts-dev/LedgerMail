@@ -14,3 +14,4 @@ jobs:
           node-version: '22'
       - run: node --check web/engine.js && node --check web/store.js && node web/engine.test.mjs && node web/store.test.mjs && node --check web/app.js && node --check web/sw.js
       - run: node web/tests.mjs
+      - run: npm install --no-save --no-audit --no-fund jsdom@26 fake-indexeddb@6 && node web/ui.test.mjs
