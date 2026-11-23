@@ -80,3 +80,50 @@ body[data-section="inbox"] .orb-a{background:radial-gradient(circle,#78ecc69b,tr
 body[data-section="settings"] .orb-a{background:radial-gradient(circle,#e9b2fc79,transparent 67%)}
 body[data-section="payments"] .nav.active,body[data-section="bills"] .nav.active,body[data-section="inbox"] .nav.active,body[data-section="settings"] .nav.active{color:#bdfff0}
 @media(prefers-reduced-motion:reduce){.screen.active>.hero{animation:none!important}.transition-splash{display:none}}
+
+/* LedgerMail v4 — explicit financial status, explainable drilldown & touch controls */
+#spendingHero{cursor:pointer;touch-action:manipulation;outline-offset:4px}
+#spendingHero:focus-visible{outline:2px solid #b5ffe9}
+.hero-bottom{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding-top:13px;border-top:1px solid #d4fff022;margin-top:auto}
+.hero-bottom span{font-size:12px}
+.tap-detail{font-weight:800!important;color:#b0ffe6!important}
+.quick-status{display:flex;flex-direction:column;gap:5px;margin-top:13px;padding:14px 15px;background:#142a39db;border:1px solid #638b8a65;border-radius:15px}
+.quick-status>div{display:flex;align-items:center;gap:9px}
+.quick-status strong{font-size:12px;overflow-wrap:anywhere}
+.quick-status small{font-size:11px;color:#a2b9c9;line-height:1.45}
+.status-dot{width:8px;height:8px;flex:none;background:#efbd7a;border-radius:50%;box-shadow:0 0 12px #ffc7817c}
+body[data-gmail="connected"] .status-dot{background:#77ebcd;box-shadow:0 0 12px #77ebcd9c}
+.review-pill{display:inline-block;font-weight:650;font-size:11px;letter-spacing:.1px;padding:5px 9px;border-radius:16px;border:1px solid #617c8d;color:#e4ecf0;background:#1e3545}
+.review-pill.paid{border-color:#3ba88a;color:#a2f9dc;background:#194f4b}
+.review-pill.due{border-color:#bd9861;color:#f5d4a7;background:#5a4430}
+.review-pill.ignored{color:#a6b3bd;background:#27313a}
+.review-head{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px;align-items:center}
+.detail-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.detail-row>strong{flex:none;white-space:nowrap}
+.detail-title{font-weight:720;color:#e6f9fa;overflow-wrap:anywhere}
+.detail-sub{font-size:12px;color:#adc0ce;line-height:1.5;margin-top:6px}
+.item .actions{margin-top:12px}
+.item .actions button{font-size:12px;padding:10px 12px;min-height:39px}
+.item[data-review="PAID"]{border-color:#46b49a75}
+.item[data-review="DUE"]{border-color:#d19a5c83}
+.item[data-review="IGNORED"]{opacity:.67}
+#dueSummary{font-size:13px;line-height:1.5;min-height:53px}
+.breakdown-sheet{width:min(610px,94vw);max-height:83dvh;background:linear-gradient(140deg,#173244,#101f30);border:1px solid #6fe7ce63;border-radius:25px;padding:21px;box-shadow:0 26px 70px #000b}
+.breakdown-sheet h3{margin:14px 0 10px}
+.breakdown-sheet .eyebrow{margin:0 0 7px;display:block}
+.breakdown-sheet .dialogHead{align-items:flex-start}
+.breakdown-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}
+.breakdown-tile{padding:15px;background:#172f41;border:1px solid #426479;border-radius:15px;display:flex;flex-direction:column;gap:9px}
+.breakdown-tile span{font-size:12px;color:#a4bdca}
+.breakdown-tile strong{font-size:19px;color:#effff9;overflow-wrap:anywhere}
+.breakdown-category{margin:13px 0}
+.breakdown-category .category-label{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin-bottom:7px}
+.breakdown-bar{height:8px;background:#284355;overflow:hidden;border-radius:99px}
+.breakdown-bar>div{height:100%;background:linear-gradient(90deg,#61dcb7,#69b8e9);border-radius:99px}
+.breakdown-item{display:flex;gap:8px;justify-content:space-between;border-bottom:1px solid #365262;padding:12px 0;font-size:13px}
+.breakdown-item strong{flex:none;white-space:nowrap}
+.breakdown-item small{color:#91adbd;display:block;margin-top:6px}
+#breakdownFooter{padding:8px 0 25px}
+#lastSynced{font-size:12px}
+#backupFile{display:none}
+@media(prefers-reduced-motion:reduce){.breakdown-bar>div{transition:none}}
