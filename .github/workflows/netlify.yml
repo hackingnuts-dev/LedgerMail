@@ -25,6 +25,10 @@ jobs:
           node-version: '22'
       - name: Validate app source and contracts
         run: |
+          node --check web/engine.js
+          node --check web/store.js
+          node web/engine.test.mjs
+          node web/store.test.mjs
           node --check web/app.js
           node --check web/sw.js
           node web/tests.mjs

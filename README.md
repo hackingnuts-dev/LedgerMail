@@ -38,3 +38,15 @@ Never commit Gmail messages, OAuth secrets, private personal data, signing keys 
 
 ## Any Gmail account / switching
 The app accepts any Gmail identity returned by the Gmail profile endpoint after the owner grants read-only OAuth access. Connected email is shown in Settings. Disconnect or choose Connect Gmail to switch; account-specific financial and inbox data are cleared immediately before switching to prevent cross-account mixing. Each account must authorize access independently. Google OAuth projects in Testing mode restrict who can authorize the app (add test users); broader distribution may require Google's restricted-scope verification.
+
+
+## Version 4: persistent local history and explicit review
+- Click the monthly amount to see category, transaction and paid/unpaid breakdown.
+- A financial email creates a **candidate**, not proof that a bank payment settled or a bill remains due. Choose Mark paid, Due / unpaid, or Ignore manually.
+- OTP and verification messages are filtered; duplicate messages are flagged. The parser does not guarantee full bank reconciliation.
+- Per-account finance summaries and review decisions are saved in IndexedDB and reloaded after the PWA is closed. No Gmail access or refresh tokens are saved. IndexedDB is device/browser-specific and may be cleared by Safari or the user.
+- Disconnecting Gmail keeps saved finance history. Deleting history is a separate confirmed action.
+- Export JSON to make your own **sensitive** local backup, or restore a JSON backup; store the file privately.
+- Google Identity Services' browser token model requires a user action to acquire a fresh short-lived token. This static, free-hosted app therefore cannot promise permanent automatic Gmail sign-in/background synchronization: use Reconnect Gmail, which reuses existing Google consent when possible. A continuously connected Gmail service would require a secure server-side OAuth code flow and refresh-token vault.
+- Authentication, synchronization, storage and payment review have explicit state transition guards with regression tests.
+- Version 4 stores historical candidate records from past scans but scans only a window of recent emails per manual/connected synchronization.

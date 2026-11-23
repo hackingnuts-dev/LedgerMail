@@ -12,5 +12,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --check web/app.js && node --check web/sw.js
+      - run: node --check web/engine.js && node --check web/store.js && node web/engine.test.mjs && node web/store.test.mjs && node --check web/app.js && node --check web/sw.js
       - run: node web/tests.mjs
