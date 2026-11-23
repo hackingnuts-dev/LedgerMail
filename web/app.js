@@ -5,7 +5,7 @@ const E=window.LedgerEngine, Store=window.LedgerStore;
 if(!E||!Store)throw new Error('LedgerMail finance dependencies missing. Reload the app.');
 const state={phase:'DISCONNECTED',email:null,token:null,expiresAt:0,controller:null,generation:0,
  messages:[],payments:[],bills:[],pageToken:null,mailQuery:'in:anywhere newer_than:90d',
- mailBusy:false,syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null};
+ mailBusy:false,mailPhase:'IDLE',route:'dashboard',backupPhase:'IDLE',syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null};
 const el=id=>document.getElementById(id);
 const money=(amount,currency='USD')=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency}).format(amount)}catch{return String(amount)+' '+currency}};
 const monthKey=d=>{const date=new Date(d);return isNaN(date)?'unknown':date.toISOString().slice(0,7)};
@@ -31,6 +31,8 @@ function setSyncPhase(next){
  state.syncPhase=E.transition('sync',state.syncPhase,next);
  el('sync').disabled=state.phase!=='CONNECTED'||state.syncPhase==='RUNNING';
 }
+function setMailPhase(next){state.mailPhase=E.transition('inbox',state.mailPhase,next);state.mailBusy=next==='LOADING'}
+function setBackupPhase(next){state.backupPhase=E.transition('backup',state.backupPhase,next)}
 function setStoragePhase(next){state.storagePhase=E.transition('storage',state.storagePhase,next);updateStorageBanner()}
 function updateStorageBanner(){
  const id=state.email;
@@ -48,8 +50,8 @@ const prefersLessMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
 function route(name,event){
   const target=el(name);
   if(!target||!target.classList.contains('screen'))return;
-  const active=document.querySelector('.screen.active');
-  if(active?.id===name)return;
+  if(state.route===name)return;
+  state.route=E.transition('navigation',state.route,name);
   document.querySelectorAll('.screen').forEach(screen=>{
     const selected=screen===target;
     screen.classList.toggle('active',selected);
@@ -107,7 +109,7 @@ el('settingsShortcut').onclick=()=>route('settings');
 function resetSession({clearView=false}={}){
  state.generation++;
  state.controller?.abort();state.controller=null;
- state.token=null;state.expiresAt=0;state.pageToken=null;state.mailBusy=false;
+ state.token=null;state.expiresAt=0;state.pageToken=null;if(state.mailPhase!=='IDLE')setMailPhase('IDLE');state.mailBusy=false;
  if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
  if(clearView){state.messages=[];state.payments=[];state.bills=[];state.lastSync=null;state.email=null}
  setPhase('DISCONNECTED');render();
@@ -150,6 +152,7 @@ function connect(){
  const previousEmail=state.email;
  if(state.phase==='CONNECTED')state.token=null;
  const generation=++state.generation;state.controller?.abort();state.controller=null;
+ if(state.mailPhase!=='IDLE')setMailPhase('IDLE');
  if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
  setPhase('CONNECTING');
  const client=google.accounts.oauth2.initTokenClient({client_id,scope:SCOPE,
@@ -247,7 +250,33 @@ async function syncFinancial(){
  }
 }
 
-async function loadMail(append=false){if(state.mailBusy)return;if(state.phase!=='CONNECTED'){toast('Connect and verify a Gmail account first');return}state.mailBusy=true;const generation=state.generation;const ctrl=new AbortController();try{const q=state.mailQuery;let path='messages?maxResults=25&q='+encodeURIComponent(q);if(append&&state.pageToken)path+='&pageToken='+encodeURIComponent(state.pageToken);const list=await api(path,ctrl.signal);const data=await Promise.allSettled((list.messages||[]).map(m=>api('messages/'+encodeURIComponent(m.id)+'?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date',ctrl.signal)));if(generation!==state.generation)return;const parsed=data.filter(x=>x.status==='fulfilled').map(x=>parseMessage(x.value));state.messages=append?[...new Map([...state.messages,...parsed].map(m=>[m.id,m])).values()]:[...new Map([...state.messages,...parsed].map(m=>[m.id,m])).values()];state.pageToken=list.nextPageToken||null;renderMail(parsed,append)}catch(e){if(e.name!=='AbortError')toast(e.message)}finally{state.mailBusy=false}}
+async function loadMail(append=false){
+ if(state.mailPhase==='LOADING')return;
+ if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to search new messages');return}
+ if(append&&!state.pageToken)return;
+ setMailPhase('LOADING');
+ const generation=state.generation, ctrl=new AbortController();
+ try{
+   const query=state.mailQuery;
+   let path='messages?maxResults=25&q='+encodeURIComponent(query);
+   if(append)path+='&pageToken='+encodeURIComponent(state.pageToken);
+   const page=await api(path,ctrl.signal);
+   const data=await Promise.allSettled((page.messages||[]).map(m=>
+     api('messages/'+encodeURIComponent(m.id)+'?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date',ctrl.signal)));
+   if(generation!==state.generation)return;
+   const parsed=data.filter(x=>x.status==='fulfilled').map(x=>parseMessage(x.value));
+   state.messages=[...new Map([...state.messages,...parsed].map(m=>[m.id,m])).values()].slice(-2500);
+   state.pageToken=page.nextPageToken||null;
+   renderMail(parsed,append);
+   setMailPhase('READY');
+ }catch(err){
+   if(generation!==state.generation)return;
+   setMailPhase(err.name==='AbortError'?'IDLE':'ERROR');
+   if(err.name!=='AbortError')toast(err.message);
+ }finally{
+   if(generation===state.generation && state.mailPhase==='LOADING')setMailPhase('IDLE');
+ }
+}
 function renderMail(items,append){const node=el('mailList');if(!append)node.replaceChildren();if(!items.length&&!append){node.className='empty';node.textContent='No matching emails.'}else{node.className='';for(const m of items){const d=document.createElement('div');d.className='item';d.innerHTML='<div class="itemTop"><strong>'+escapeHTML(m.subject)+'</strong><small>'+escapeHTML(new Date(m.date).toLocaleDateString())+'</small></div><p>'+escapeHTML(m.sender)+'</p><p>'+escapeHTML(m.snippet)+'</p>';d.onclick=()=>showMail(m);node.append(d)}}el('loadMore').hidden=!state.pageToken}
 function showMail(m){el('dialogTitle').textContent=m.subject;el('dialogMeta').textContent=m.sender+' • '+new Date(m.date).toLocaleString();el('dialogText').textContent=m.snippet+'\n\nFor full message contents, open Gmail.';el('mailDialog').showModal()}
 function statusLabel(status){
@@ -262,14 +291,16 @@ function reviewCandidate(c,next){
 function itemCard(c){
  const node=document.createElement('article');
  node.className='item';node.dataset.review=E.normalizeStatus(c.status);
- const evidence=c.evidence||'Email-derived candidate — verify against original statement';
+ const evidence=c.reviewSuggestion||c.evidence||'Email-derived candidate — verify against original statement';
+ const suggestion=({LIKELY_PAID:'Email suggests paid',POSSIBLY_DUE:'Email suggests due',STATEMENT_ONLY:'Statement: status unknown',PURCHASE_UNVERIFIED:'Purchase: payment unverified'})[c.suggestedStatus]||null;
  const label=statusLabel(c.status);
  const subtitle=String(c.date).slice(0,10)+(c.dueDate?' · Due '+c.dueDate:'')+' · '+(c.category||'Other');
  node.innerHTML='<div class="detail-row"><span class="detail-title">'+escapeHTML(c.merchant)+'</span><strong>'+money(c.amount,c.currency)+'</strong></div>'+
    '<div class="detail-sub">'+escapeHTML(c.subject)+'</div>'+
    '<div class="detail-sub">'+escapeHTML(subtitle)+'</div>'+
    '<div class="review-head"><span class="review-pill '+E.normalizeStatus(c.status).toLowerCase()+'">'+escapeHTML(label)+'</span>'+
-   (c.possibleDuplicateOf?'<span class="review-pill">Possible duplicate · verify</span>':'')+'</div>'+
+   (c.possibleDuplicateOf?'<span class="review-pill">Possible duplicate · verify</span>':'')+
+   (E.normalizeStatus(c.status)==='REVIEW'&&suggestion?'<span class="review-pill suggestion">'+escapeHTML(suggestion)+'</span>':'')+'</div>'+
    '<div class="detail-sub">'+escapeHTML(evidence)+'</div>';
  const actions=document.createElement('div');actions.className='actions';
  for(const [next,text] of [['PAID','Mark paid'],['DUE','Due / unpaid'],['IGNORED','Ignore'],['REVIEW','Reset review']]){
@@ -310,18 +341,27 @@ function render(){
  select.replaceChildren(new Option('All months','all'));
  months.forEach(m=>select.add(new Option(m,m)));select.value=months.includes(previous)?previous:'all';
  renderPayments();
- const b=el('billList');b.replaceChildren();
- if(!state.bills.length){b.className='empty';b.textContent='No bill or statement candidates yet'}
- else{b.className='';state.bills.forEach(c=>b.append(itemCard(c)))}
+ renderBills();
  const due=E.billSummary(state.bills);
  el('dueSummary').textContent=due.count?due.count+' bills marked due / unpaid · '+moneyList(due.due,'DUE')+
    (due.overdue.length?' · '+due.overdue.length+' past the extracted due date':''):
    'No bills have been marked unpaid yet. '+due.review+' still need review.';
  updateStorageBanner();
 }
+function renderBills(){
+ const selected=el('billStatusFilter')?.value||'all';
+ const b=el('billList');b.replaceChildren();
+ const rank={DUE:0,REVIEW:1,PAID:2,IGNORED:3};
+ const bills=state.bills.filter(c=>selected==='all'||E.normalizeStatus(c.status)===selected)
+   .sort((a,b)=>(rank[E.normalizeStatus(a.status)]??9)-(rank[E.normalizeStatus(b.status)]??9)||b.date.localeCompare(a.date));
+ if(!bills.length){b.className='empty';b.textContent='No bills match this status'}
+ else{b.className='';bills.forEach(c=>b.append(itemCard(c)))}
+}
 function renderPayments(){
  const q=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;
+ const status=el('paymentStatusFilter')?.value||'all';
  const list=state.payments.filter(x=>(month==='all'||monthKey(x.date)===month)&&
+   (status==='all'||E.normalizeStatus(x.status)===status)&&
    (x.merchant+' '+x.subject).toLowerCase().includes(q));
  el('confirmedTotal').textContent=moneyList(list,'PAID');
  const n=el('paymentList');n.replaceChildren();
@@ -378,6 +418,8 @@ function openBreakdown(){
 
 el('paymentSearch').oninput=renderPayments;
 el('monthSelect').onchange=renderPayments;
+el('paymentStatusFilter').onchange=renderPayments;
+el('billStatusFilter').onchange=renderBills;
 el('spendingHero').onclick=openBreakdown;
 el('spendingHero').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openBreakdown()}};
 el('closeBreakdown').onclick=()=>el('breakdownDialog').close();
