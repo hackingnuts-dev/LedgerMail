@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const Store=createRequire(import.meta.url)('./store.js');
+const base={email:' Person@Gmail.com ',token:'SECRET-BEARER-TOKEN',refreshToken:'SHOULD-NOT-PERSIST',messages:[{id:'id1',subject:'Receipt',snippet:'$10',token:'BAD',sender:'Shop'}],payments:[{key:'x',amount:10,status:'PAID',token:'BAD'}],bills:[]};
+const s=Store.snapshot(base);
+assert.equal(s.email,'person@gmail.com');
+assert.equal(s.version,4);
+assert.equal(s.payments[0].status,'PAID');
+assert.equal(s.messages[0].snippet,'$10');
+assert.equal(JSON.stringify(s).includes('SECRET-BEARER-TOKEN'),false,'Bearer tokens must never enter local history');
+assert.equal(JSON.stringify(s).includes('SHOULD-NOT-PERSIST'),false);
+assert.equal(JSON.stringify(s).includes('"token"'),false);
+assert.throws(()=>Store.snapshot({...base,email:'invalid email'}),/Invalid Gmail/);
+assert.throws(()=>Store.snapshot({...base,payments:[{key:'x',amount:2e10}]}),/Invalid amount/);
+console.log('Passed local storage schema, per-account partition and token-exclusion contracts.');
