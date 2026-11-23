@@ -1,0 +1,29 @@
+# LedgerMail: explicit state-machine review (November 2026)
+
+This audit describes finite-state boundaries implemented in the browser. It does NOT claim all possible bugs have been eliminated. web/engine.js defines allowed transitions; unauthorized transitions throw rather than silently mutate business state.
+
+## State machines
+| Area | States | Invariants |
+|---|---|---|
+| Gmail OAuth | DISCONNECTED, CONNECTING, VERIFYING, CONNECTED, EXPIRED, ERROR | Scanning requires CONNECTED. Verify email address before loading that account's IndexedDB history. Do not persist OAuth tokens. |
+| Finance scan | IDLE, RUNNING, COMPLETE, PARTIAL, ERROR | One scan at a time; discard stale async results by account and generation; show partial results as partial. |
+| Local storage | BOOTING, LOADING, READY, SAVING, ERROR | Serialize IndexedDB writes; partition snapshots by Gmail address; report failed saves; delete aborts in-flight sync. |
+| Financial review | REVIEW, PAID, DUE, IGNORED | Evidence is a suggestion, not verified payment. Only user review changes financial status. Save review after every change. |
+| Navigation | dashboard, payments, bills, inbox, settings | One active route and selected tab; invalid transitions are rejected. |
+| Gmail inbox | IDLE, LOADING, READY, ERROR | Single-flight pagination, stale account result checks, and disabled controls while fetching. |
+| Backup | IDLE, READING, VALIDATING, WRITING, EXPORTING, DONE, ERROR | Schema validation, confirmation before import, and no credential export. |
+
+## Regression coverage
+- web/engine.test.mjs: receipts, OTP suppression, dates, currencies, duplicate detection, state transitions and review retention
+- web/store.test.mjs: per-account serialization and credential-exclusion schema
+- web/ui.test.mjs: simulated iPhone PWA open/reopen, $285 breakdown, paid review persistence, filters, account isolation, offline history
+
+## Known limitations
+- An email is not authoritative proof of a bank-settled payment or unpaid bill.
+- Each scan examines up to 300 matching emails from the preceding 90 days, retaining older saved candidates.
+- IndexedDB is on-device storage, NOT end-to-end encrypted or cloud synced. Safari may clear it; export sensitive local backups.
+- Google's browser token model requires user-triggered reconnection after access token expiry or re-opening the app; no refresh token is stored.
+- Gmail's read-only scope is restricted, so broad public authorization requires Google's verification process.
+- Netlify's current Actions publishing credential can expire and require renewal or a permanent Git-based deployment configuration.
+
+These controls reduce hidden state/race risks, but do not guarantee that the app has zero defects.

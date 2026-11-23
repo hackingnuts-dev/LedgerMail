@@ -127,3 +127,5 @@ body[data-gmail="connected"] .status-dot{background:#77ebcd;box-shadow:0 0 12px 
 #lastSynced{font-size:12px}
 #backupFile{display:none}
 @media(prefers-reduced-motion:reduce){.breakdown-bar>div{transition:none}}
+
+.review-filters{align-items:center;justify-content:flex-start;margin:10px 0 14px;gap:12px}.review-filters label{font-size:12px;color:#b6cfd5;font-weight:650;flex:none}.review-filters select{width:min(245px,100%);min-width:165px}.review-pill.suggestion{background:#1e3b51;color:#bdeaff;border-color:#5f98ba}.item .review-pill.suggestion{font-weight:600}
