@@ -69,3 +69,14 @@ nav::before{content:"";position:absolute;z-index:0;top:7px;bottom:7px;left:calc(
 @media(min-width:700px){nav{bottom:18px}.shell{padding-bottom:120px}#toast{bottom:105px}}
 @media(max-width:355px){.shell{padding-left:14px;padding-right:14px}.nav{font-size:9px}.nav span{font-size:20px}nav{width:calc(100% - 16px)}.hero strong{font-size:37px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.ambient-orb{filter:blur(32px)}.hero{transform:none!important}}
+
+/* v2.1: preserve live 3D hero tilt after reveal; move nav indicator with GPU transforms. */
+.screen.active>.hero{animation:heroSoftAppear .8s .15s both}
+@keyframes heroSoftAppear{from{opacity:0;filter:blur(7px)}to{opacity:1;filter:blur(0)}}
+nav::before{left:6px;transform:translateX(calc(var(--nav-index)*100%)) scale(.92);transition:transform .44s cubic-bezier(.18,1,.28,1)}
+body[data-section="payments"] .orb-a{background:radial-gradient(circle,#44c0f5aa,transparent 67%)}
+body[data-section="bills"] .orb-a{background:radial-gradient(circle,#a992ff96,transparent 67%)}
+body[data-section="inbox"] .orb-a{background:radial-gradient(circle,#78ecc69b,transparent 67%)}
+body[data-section="settings"] .orb-a{background:radial-gradient(circle,#e9b2fc79,transparent 67%)}
+body[data-section="payments"] .nav.active,body[data-section="bills"] .nav.active,body[data-section="inbox"] .nav.active,body[data-section="settings"] .nav.active{color:#bdfff0}
+@media(prefers-reduced-motion:reduce){.screen.active>.hero{animation:none!important}.transition-splash{display:none}}
