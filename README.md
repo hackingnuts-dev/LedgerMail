@@ -35,3 +35,6 @@ Visit the deployed HTTPS URL in Safari → Share → Add to Home Screen. No Deve
 `node --check web/app.js && node --check web/sw.js && node web/tests.mjs`
 
 Never commit Gmail messages, OAuth secrets, private personal data, signing keys or provisioning files.
+
+## Any Gmail account / switching
+The app accepts any Gmail identity returned by the Gmail profile endpoint after the owner grants read-only OAuth access. Connected email is shown in Settings. Disconnect or choose Connect Gmail to switch; account-specific financial and inbox data are cleared immediately before switching to prevent cross-account mixing. Each account must authorize access independently. Google OAuth projects in Testing mode restrict who can authorize the app (add test users); broader distribution may require Google's restricted-scope verification.
