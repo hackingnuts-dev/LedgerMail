@@ -1,0 +1,19 @@
+{
+  "id": "./",
+  "name": "LedgerMail - Gmail & Bills",
+  "short_name": "LedgerMail",
+  "description": "Privacy-first Gmail receipt and bill organizer",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1420",
+  "theme_color": "#101b29",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
