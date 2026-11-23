@@ -2,7 +2,7 @@
 (function(root){
 'use strict';
 const STATES=Object.freeze({
- auth:{DISCONNECTED:['CONNECTING','DISCONNECTED'],CONNECTING:['VERIFYING','ERROR','DISCONNECTED'],VERIFYING:['CONNECTED','ERROR','DISCONNECTED'],CONNECTED:['EXPIRED','DISCONNECTED','CONNECTING'],EXPIRED:['CONNECTING','DISCONNECTED'],ERROR:['CONNECTING','DISCONNECTED']},
+ auth:{DISCONNECTED:['CONNECTING','DISCONNECTED'],CONNECTING:['VERIFYING','ERROR','DISCONNECTED'],VERIFYING:['CONNECTED','ERROR','DISCONNECTED','EXPIRED'],CONNECTED:['EXPIRED','DISCONNECTED','CONNECTING'],EXPIRED:['CONNECTING','DISCONNECTED','ERROR'],ERROR:['CONNECTING','DISCONNECTED']},
  sync:{IDLE:['RUNNING','IDLE'],RUNNING:['COMPLETE','PARTIAL','ERROR','IDLE'],COMPLETE:['RUNNING','IDLE'],PARTIAL:['RUNNING','IDLE'],ERROR:['RUNNING','IDLE']},
  storage:{BOOTING:['LOADING','ERROR'],LOADING:['READY','ERROR'],READY:['LOADING','SAVING','ERROR'],SAVING:['READY','ERROR','SAVING'],ERROR:['LOADING','ERROR']}
 });
@@ -29,9 +29,9 @@ const BLOCKED=/\b(otp|one[- ]time (password|passcode|code)|verification code|sec
 const BILL=/(statement (available|ready|is here)|billing statement|bill (available|ready|due)|amount due|minimum (payment|due)|payment due|due date|total due|upcoming payment|payment reminder|invoice due|outstanding balance)/i;
 const CONFIRMED_PAYMENT=/(payment (received|successful|completed|processed|confirmed|made)|you (paid|spent|sent)|paid (successfully|in full)|autopay (processed|complete)|receipt (for|from|#)|purchase (confirmed|completed)|order (paid|completed)|card (charged|debited)|account (debited|charged)|transfer (completed|sent)|charge (posted|confirmed))/i;
 const RECEIPT=/(payment|purchase|receipt|paid|charged|debited|spent|order confirmed|transaction completed|transfer complete)/i;
-const AMOUNT=/(?:USD\s*|US\$\s*|\$\s*)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/gi;
-const INR=/(?:INR\s*|₹\s*)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/gi;
-const GBP=/(?:GBP\s*|£\s*)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/gi;
+const AMOUNT=/(?:USD\s*|US\$\s*|\$\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
+const INR=/(?:INR\s*|₹\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
+const GBP=/(?:GBP\s*|£\s*)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)/gi;
 function hits(text,regex,currency){
  const copy=new RegExp(regex.source,regex.flags);return [...String(text).matchAll(copy)].map(m=>({amount:Number(m[1].replaceAll(',','')),currency,pos:m.index??0})).filter(x=>x.amount>0&&Number.isFinite(x.amount)&&x.amount<1e9);
 }
