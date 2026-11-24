@@ -384,6 +384,13 @@ function compactRow(c){
  return node;
 }
 
+function moneyList(items,status){
+ const sums={};
+ for(const item of items.filter(c=>E.normalizeStatus(c.status)===status)){
+   sums[item.currency||'USD']=(sums[item.currency||'USD']||0)+item.amount;
+ }
+ return Object.entries(sums).map(([currency,total])=>money(total,currency)).join(' + ')||'$0.00';
+}
 function render(){
  const today=new Date(),current=monthKey(today);
  const eligible=state.payments.filter(c=>paymentEligible(c)&&monthKey(c.date)===current);
