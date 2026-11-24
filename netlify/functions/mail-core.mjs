@@ -20,6 +20,8 @@ export const signTicket = (id,days=90) => { const data=Buffer.from(JSON.stringif
 export const readTicket = raw => { try { const [v,s] = (raw||"").split("."); if(!verify(v,s)) return null; const item=JSON.parse(Buffer.from(v,"base64url")); return item.exp > Date.now() && /^[a-f0-9]{64}$/.test(item.id) ? item.id : null; } catch {return null} };
 export const stateTicket = () => { const nonce=randomBytes(18).toString("base64url"), exp=Date.now()+10*60*1000; const value=nonce+"."+exp; return value+"."+signature(value); };
 export const validState = raw => { const [n,e,s] = (raw || "").split("."); return Boolean(n && Number(e)>Date.now() && Number(e)<Date.now()+600001 && verify(n+"."+e,s)); };
+export const workToken = id => signature("background:"+id);
+export const checkWorkToken = (id,value) => verify("background:"+id,value);
 export const oauthUrl = state => { const u=new URL("https://accounts.google.com/o/oauth2/v2/auth"); for(const [k,v] of Object.entries({client_id:process.env.GOOGLE_CLIENT_ID,redirect_uri:redirectUri(),response_type:"code",scope:SCOPE,access_type:"offline",prompt:"consent",state}))u.searchParams.set(k,v);return u.toString(); };
 export async function tokenExchange(form) {
   const res=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(form)});
