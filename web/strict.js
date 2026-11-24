@@ -344,7 +344,7 @@ function monthBounds(month){
 function dateKey(value){const d=new Date(value);return Number.isFinite(d.getTime())?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}
 function monthlyQuery(month,updates=false){
  const b=monthBounds(month);
- return (updates?'{category:primary category:updates}':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash';
+ return (updates?'{category:primary category:updates}':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash {receipt invoice payment paid charged debited transaction statement bill purchase order booking tickets repayment autopay subscription renewal amount toll refund}';
 }
 function merchantKey(c){return String(c.merchant||'').toLowerCase().trim()+'|'+c.currency}
 function monthlyModel(payments,bills,month,today){

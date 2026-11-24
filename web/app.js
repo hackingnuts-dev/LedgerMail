@@ -1,6 +1,7 @@
 /* LedgerMail v4: explicit state machines, local per-account history, explainable candidate review. */
 'use strict';
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
+const LOGIN_SCOPE=SCOPE+' openid email';
 const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStrict;
 if(!E||!Store||!Strict)throw new Error('LedgerMail finance dependencies missing. Reload the app.');
 const state={phase:'DISCONNECTED',email:null,token:null,expiresAt:0,controller:null,generation:0,
@@ -148,7 +149,7 @@ function applyAccount(record,email){
  state.payments=Strict.reconcileDuplicates(payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)})));
  state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
- state.scanStats=null;state.pageToken=null;state.coverage=Object.fromEntries(Object.entries(x?.coverage||{}).filter(([k,v])=>v.build===11));state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
+ state.scanStats=null;state.pageToken=null;state.coverage=Object.fromEntries(Object.entries(x?.coverage||{}).filter(([k,v])=>v.build===14));state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
  render();updateStorageBanner();
 }
 
@@ -172,7 +173,7 @@ function connect(){
  if(state.mailPhase!=='IDLE')setMailPhase('IDLE');
  if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
  setPhase('CONNECTING');
- const client=google.accounts.oauth2.initTokenClient({client_id,scope:SCOPE,
+ const client=google.accounts.oauth2.initTokenClient({client_id,scope:LOGIN_SCOPE,
  callback:async r=>{
    if(generation!==state.generation)return;
    if(r.error||!r.access_token){setPhase('ERROR');toast(r.error_description||r.error||'Google authorization cancelled');return}
@@ -183,9 +184,9 @@ function connect(){
    state.expiresAt=Date.now()+(Math.max(60,Number(r.expires_in)||3600)-30)*1000;
    setPhase('VERIFYING');
    try {
-     const profile=await api('profile');
+     const profile=await verifyGoogleIdentity(r.access_token,generation);
      if(generation!==state.generation)return;
-     const email=String(profile.emailAddress||'').toLowerCase();
+     const email=String(profile.email||'').toLowerCase();
      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new Error('Google did not return a valid Gmail address');
      if(email!==previousEmail){
        // Prevent mixing financial records from separate Gmail accounts.
@@ -195,8 +196,7 @@ function connect(){
      }else state.email=email;
      if(generation!==state.generation)return;
      setPhase('CONNECTED');toast('Connected to '+email);
-     const coverage=state.coverage[state.selectedMonth];
-     if(!coverage?.complete||coverage.includeUpdates!==state.includeUpdates)syncFinancial().catch(err=>toast(err.message));
+     el('syncStatus').textContent='Connected. Select a month and tap Scan month to update your finances.';
    }catch(err){
      if(generation!==state.generation)return;
      state.token=null;setPhase('ERROR');if(err.code==='GMAIL_RATE_LIMIT')el('authStatus').textContent='Google temporarily rate-limited Gmail verification. Saved history remains; reconnect after cooldown.';toast('Gmail connection: '+err.message);
@@ -208,9 +208,20 @@ function connect(){
  catch(err){setPhase('ERROR');toast('Cannot open Google account chooser: '+err.message)}
 }
 
+async function verifyGoogleIdentity(token,generation){
+ const response=await fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:'Bearer '+token},cache:'no-store'});
+ if(generation!==state.generation||state.token!==token)throw new DOMException('Account changed','AbortError');
+ if(!response.ok)throw Error('Google identity verification failed ('+response.status+'). Reconnect and allow email access.');
+ const profile=await response.json();
+ if(profile.email_verified!==true||typeof profile.email!=='string')throw Error('Google did not verify the account email. Reconnect and allow email access.');
+ return profile;
+}
 function requireToken(){if(!state.token||Date.now()>=state.expiresAt){state.token=null;setPhase('EXPIRED');throw new Error('Google session expired. Connect again.')}return state.token}
 // Shared, conservative request pacing; retries never switch accounts or reuse a stale token.
 let gmailTail=Promise.resolve(),gmailNext=0,gmailCooldown=0,gmailBlockedGeneration=-1;
+const quotaKey=email=>'ledgermail.gmailCooldown.'+String(email||'').toLowerCase();
+function readCooldown(email){try{return Number(localStorage.getItem(quotaKey(email)))||0}catch{return 0}}
+function writeCooldown(email,until){try{localStorage.setItem(quotaKey(email),String(until))}catch{}}
 const abortError=()=>new DOMException('Gmail request cancelled','AbortError');
 function gmailWait(ms,signal){
  if(signal?.aborted)return Promise.reject(abortError());
@@ -227,15 +238,15 @@ function quotaDelay(res,attempt,now=Date.now()){
  return Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)));
 }
 async function api(path,signal){
- const generation=state.generation,token=requireToken();
+ const generation=state.generation,token=requireToken(),account=state.email;
  const check=()=>{if(signal?.aborted||generation!==state.generation||state.token!==token)throw abortError();requireToken()};
  const task=async()=>{
    for(let attempt=0;attempt<3;attempt++){
      check();
      if(gmailBlockedGeneration===generation&&Date.now()<gmailCooldown){const error=Error('Gmail cooldown active. Saved history is retained.');error.code='GMAIL_RATE_LIMIT';throw error;}
-     await gmailWait(Math.max(0,gmailNext-Date.now(),gmailCooldown-Date.now()),signal);check();
+     await gmailWait(Math.max(0,gmailNext-Date.now(),Math.max(gmailCooldown,readCooldown(account))-Date.now()),signal);check();
      // At most about 200 requests/minute per tab (roughly 1,000 quota units for message reads).
-     gmailNext=Date.now()+300;
+     gmailNext=Date.now()+1500;
      const res=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/'+path,{headers:{Authorization:'Bearer '+token},signal});
      check();
      if(res.ok)return res.json();
@@ -244,8 +255,8 @@ async function api(path,signal){
      if(res.status===401){state.token=null;setPhase('EXPIRED');throw Error('Gmail authorization expired. Reconnect.')}
      const limited=res.status===429||(res.status===403&&/quota|rate.?limit|resource.exhausted|too many requests/i.test(detail+' '+reasons));
      if(limited){
-       const delay=quotaDelay(res,attempt);gmailCooldown=Math.max(gmailCooldown,Date.now()+delay);
-       const notice='Gmail rate limit reached. Automatically retrying after cooldown; saved history is safe.';
+       const delay=quotaDelay(res,attempt);gmailCooldown=Math.max(gmailCooldown,Date.now()+delay);writeCooldown(account,gmailCooldown);
+       const notice='Google temporarily limits Gmail reads. Retrying after cooldown; your account remains connected and saved history is safe.';
        if(state.phase==='VERIFYING')el('authStatus').textContent=notice;
        if(state.syncPhase==='RUNNING'){el('syncStatus').textContent=notice;el('monthCoverage').textContent=notice}
        if(attempt<2)continue;
@@ -271,7 +282,10 @@ async function syncFinancial(){
  state.controller=ctrl;
  let scanned=0,failed=0,skipped=0,unreadable=0;
  const reasons={};const note=r=>{reasons[r]=(reasons[r]||0)+1};
- const accepted=[],summaries=[],seen=new Set(),startedAt=Date.now();
+ const prior=state.coverage[month];
+ const incremental=prior?.build===14&&prior.includeUpdates===includeUpdates;
+ const previousIds=incremental?(prior.checkedIds||[]):[];
+ const accepted=incremental?[...state.payments,...state.bills].filter(c=>monthKey(c.date)===month&&(includeUpdates||c.evidenceLevel!=='UPDATES_FULL')):[],summaries=[],seen=new Set(previousIds),startedAt=Date.now();
  const valid=()=>generation===state.generation&&state.email===email;
  const active=()=>valid()&&state.selectedMonth===month&&state.includeUpdates===includeUpdates;
  try{
@@ -292,10 +306,11 @@ async function syncFinancial(){
            if(row.status!=='fulfilled'){failed++;note(row.reason?.code==='GMAIL_RATE_LIMIT'?'Gmail rate limit':'Gmail fetch error');if(row.reason?.code==='GMAIL_RATE_LIMIT')throw row.reason;continue}
            const raw=row.value;
            if(!(Strict.isPrimary(raw.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(raw.labelIds)))){skipped++;note('Excluded category');continue}
-           if(seen.has(raw.id))continue;seen.add(raw.id);
+           if(seen.has(raw.id))continue;
            const m=Strict.parseGmailFull(raw,includeUpdates);
            if(!m){unreadable++;note('No readable message body');continue}
-           if(monthKey(m.date)!==month){skipped++;note('Outside selected month');continue}
+           if(monthKey(m.date)!==month){skipped++;note('Outside selected month');seen.add(raw.id);continue}
+           seen.add(raw.id);
            const result=Strict.inspectEvidence(m,includeUpdates);
            let c=Strict.structuredReceipt(m,includeUpdates)||Strict.classifyFullMail(m,includeUpdates);
            if(!c||c.confidence!=='HIGH'){
@@ -324,21 +339,21 @@ async function syncFinancial(){
    const complete=failed===0&&unreadable===0;
    const retainUpdates=items=>items;
    const oldUpdatePayments=includeUpdates?[]:state.payments.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
-   state.payments=Strict.mergeMonth(retainUpdates(state.payments),accepted.filter(c=>c.kind==='PAYMENT'),month,complete);
+   state.payments=Strict.mergeMonth(retainUpdates(state.payments),accepted.filter(c=>c.kind==='PAYMENT'),month,false);
    if(oldUpdatePayments.length)state.payments=Strict.mergePrimary(state.payments,oldUpdatePayments,'',false);
    const oldUpdateBills=includeUpdates?[]:state.bills.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
-   state.bills=Strict.mergeMonth(retainUpdates(state.bills),accepted.filter(c=>c.kind==='BILL'),month,complete);
+   state.bills=Strict.mergeMonth(retainUpdates(state.bills),accepted.filter(c=>c.kind==='BILL'),month,false);
    if(oldUpdateBills.length)state.bills=Strict.mergePrimary(state.bills,oldUpdateBills,'',false);
    state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
    state.lastSync=new Date().toISOString();
-   state.coverage={...state.coverage,[month]:{build:11,complete,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:state.lastSync,includeUpdates}};
+   state.coverage={...state.coverage,[month]:{build:14,checkedIds:[...seen].slice(-10000),complete,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:state.lastSync,includeUpdates}};
    state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,completed:complete,month,elapsedMs:Date.now()-startedAt};
    setSyncPhase(complete?'COMPLETE':'PARTIAL');
    el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+accepted.length+' financial emails found';
    render();await saveHistory();toast('Month updated: '+accepted.length+' financial emails');
  }catch(err){
    if(!valid())return;
-   if(err.name!=='AbortError'){if(err.code==='GMAIL_RATE_LIMIT'&&active()){state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);state.coverage={...state.coverage,[month]:{build:11,complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};setSyncPhase('PARTIAL');render();await saveHistory();toast(err.message);return}setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
+   if(err.name!=='AbortError'){if(err.code==='GMAIL_RATE_LIMIT'&&active()){state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);state.coverage={...state.coverage,[month]:{build:14,checkedIds:[...seen].slice(-10000),complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};setSyncPhase('PARTIAL');render();await saveHistory();toast(err.message);return}setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
  }finally{
    if(valid()){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED';render()}
  }
@@ -512,7 +527,7 @@ function render(){
  el('scanOutcome').textContent=coverage&&coverage.scanned>0&&coverage.accepted===0?'No payment amounts were accepted. Open the scan explanation above to see why; zero does not mean no spending.':'';
  const audit=el('scanAudit');audit.hidden=!coverage?.reasons;const reasonNode=el('scanReasons');reasonNode.replaceChildren();
  for(const [reason,count] of Object.entries(coverage?.reasons||{}).sort((a,b)=>b[1]-a[1])){const row=document.createElement('p');row.textContent=reason+' · '+count;reasonNode.append(row)}
- if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
+ if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' new candidates checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
  const uncertain=[...state.payments,...state.bills].filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||(c.possibleDuplicateOf&&c.duplicateConfirmed!=='yes')));
  el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
  timeline(el('recent'),m.entries,timelineFilter);
@@ -525,7 +540,7 @@ function render(){
  const info=el('scanDetails');
  if(state.scanStats){
    const st=state.scanStats;
-   info.textContent='Full email analysis · '+st.scanned+' emails checked · '+st.skipped+' unrelated excluded'+
+   info.textContent='Full email analysis · '+st.scanned+' candidate emails checked · '+st.skipped+' unrelated excluded'+
      (st.failed||st.unreadable?' · '+(st.failed+st.unreadable)+' not fully read':'')+
      '';
  }else info.textContent=state.lastSync?'Last scan saved; only Primary full-email matches are shown.':'Primary-only · full email text analyzed locally · no attachments';

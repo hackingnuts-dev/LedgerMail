@@ -4,7 +4,7 @@ import {JSDOM} from 'jsdom';
 import {indexedDB} from 'fake-indexeddb';
 
 const html=fs.readFileSync('web/index.html','utf8');
-const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8')).map(code=>code.replace('gmailNext=Date.now()+300','gmailNext=Date.now()+1').replace('Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)))','Math.max(10,Number.isFinite(wait)?wait:0)'));
+const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8')).map(code=>code.replace('gmailNext=Date.now()+1500','gmailNext=Date.now()+1').replace('Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)))','Math.max(10,Number.isFinite(wait)?wait:0)'));
 const b64=s=>Buffer.from(s,'utf8').toString('base64url');
 const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  id,threadId:id,labelIds:labels,internalDate:String(Date.now()),
@@ -30,11 +30,13 @@ w.indexedDB=indexedDB;w.scrollTo=()=>{};w.confirm=()=>true;
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 w.HTMLDialogElement.prototype.close=function(){this.open=false};
 w.localStorage.setItem('ledgermail.clientId','123456-example.apps.googleusercontent.com');
-const calls=[];let profileAttempts=0;
+const calls=[];let profileAttempts=0,searchAttempts=0;
 w.fetch=async(url,opts)=>{
  const u=new URL(url);calls.push(u.toString());
- if(u.pathname.endsWith('/profile')){profileAttempts++;if(profileAttempts===1)return {ok:false,status:403,headers:{get:()=>null},json:async()=>({error:{message:'Quota exceeded for Units per minute per user'}})};return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})}}
+ if(u.hostname==='openidconnect.googleapis.com'){profileAttempts++;return {ok:true,json:async()=>({email:'qa@gmail.com',email_verified:true})}}
+ if(u.pathname.endsWith('/profile'))throw new Error('Login must not use Gmail quota');
  if(u.pathname.endsWith('/messages')){
+   searchAttempts++;if(searchAttempts===1)return {ok:false,status:403,headers:{get:()=>null},json:async()=>({error:{message:'Quota exceeded for Units per minute per user'}})};
    assert.equal(u.searchParams.get('labelIds'),null);
    const combined=u.searchParams.get('q').includes('category:updates');
    assert(u.searchParams.get('q').includes('category:primary'));
@@ -55,9 +57,13 @@ for(const code of scripts)w.eval(code);
 const wait=()=>new Promise(r=>setTimeout(r,35));
 for(let i=0;i<20;i++){await wait();if(w.document.getElementById('localSaveStatus').textContent.includes('Ready to save'))break}
 w.document.getElementById('connect').click();
+for(let i=0;i<30;i++){await wait();if(w.document.getElementById('authStatus').textContent.includes('Connected:'))break}
+assert.equal(searchAttempts,0,'no automatic Gmail scan during login');
+w.document.getElementById('scanMonth').click();
 for(let i=0;i<95;i++){await wait();const t=w.document.getElementById('syncStatus').textContent;if(t.includes('Primary scan complete')||t.includes('Partial scan'))break}
 const d=w.document;
-assert.equal(profileAttempts,2,'quota-limited profile retried without login failure');
+assert.equal(profileAttempts,1,'identity verified outside Gmail quota');
+assert(searchAttempts>=3,'quota-limited search retried');
 assert(d.getElementById('syncStatus').textContent.includes('Primary scan complete'),d.getElementById('syncStatus').textContent);
 assert(d.getElementById('monthTotal').textContent.includes('$285.00'),'clear Primary USD purchase counted');
 assert(d.getElementById('monthTotal').textContent.includes('1,500'),'localized amount recovered');
