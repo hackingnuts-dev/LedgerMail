@@ -103,7 +103,7 @@ function contextAt(text,position){
  return text.slice(start,end).replace(/\s+/g,' ').trim();
 }
 function transactionReference(text){
- const m=String(text).match(/\b(?:transaction (?:id|ref(?:erence)?)|order (?:number|no\.?|#)|receipt (?:number|no\.?|#)|confirmation (?:number|#))\s*[:#-]?\s*([A-Z0-9-]{5,32})\b/i);
+ const m=String(text).match(/\b(?:transaction (?:id|ref(?:erence)?)|order (?:number|no\.?|#)|receipt\s*(?:number|no\.?|\[?#)|confirmation (?:number|#))\s*[:#-]?\s*([A-Z0-9-]{5,32})\b/i);
  return m?.[1]?.toUpperCase()||null;
 }
 function normalizeFinanceText(value){
@@ -124,6 +124,7 @@ function structuredReceipt(email,allowUpdates=false){
    if(amount&&amount.amount>0)fields.push({...amount,label:match[1].toLowerCase()});
  }
  const isReceipt=/\b(receipt|tickets?|booking confirmation|payment successful|repayment successful|payment confirmation)\b/i.test(subject)||/\b(?:receipt #|booking id|payment method|paid via|payment type|amount charged)\b/i.test(body);
+ const matchContext=Array.from(new Set((body.match(/\b(?:calendly|consultation|appointment|meeting|booking|subscription|repayment|toll|ticket)\b/gi)||[]).map(x=>x.toLowerCase()))).join(' ');
  const paid=fields.find(x=>/^(amount paid|total paid|amount charged|amount debited)$/.test(x.label));
  const due=fields.find(x=>/^(total amount due|total due|statement balance|amount due|balance due)$/.test(x.label));
  const repayment=/\b(?:credit card bill payment|repayment successful|repayment is successful|payment of.{0,70}towards.{0,70}credit card)\b/i.test(subject+' '+body.slice(0,800));
@@ -137,7 +138,7 @@ function structuredReceipt(email,allowUpdates=false){
  const parseDay=x=>x&&!Number.isNaN(Date.parse(x))?dateKey(new Date(x)):null;
  const txDate=kind==='PAYMENT'?parseDay(paidDate):null;
  const merchant=String(email.sender||'Unknown sender').split('<')[0].replace(/^["']|["']$/g,'').trim().slice(0,65)||'Unknown sender';
- return {key:email.id,messageId:email.id,merchant,subject,date:date.toISOString(),transactionDate:txDate,amount:hit.amount,currency:hit.currency,
+ return {key:email.id,messageId:email.id,merchant,subject,date:date.toISOString(),transactionDate:txDate,matchContext,amount:hit.amount,currency:hit.currency,
  category:root.LedgerEngine?.category(subject+' '+merchant)||'Other',kind,status:'REVIEW',confidence:'HIGH',signal:repayment?'CARD_REPAYMENT':kind==='BILL'?'BILL_NOTICE':'COMPLETION_EMAIL',
  evidenceLevel:isFinancialUpdate(email.labels)?'UPDATES_FULL':'PRIMARY_FULL',analysisVersion:5,reference:transactionReference(subject+' '+body),dueDate:parseDay(dueDate),
  evidence:'Explicit '+hit.label+' field in full email',source:hit.label+': '+hit.currency+' '+hit.amount.toFixed(2),reviewSuggestion:repayment?'Credit card repayment; tracked separately from purchases.':'Check original email and account before relying on the amount.',suggestedStatus:kind==='BILL'?'POSSIBLY_DUE':'LIKELY_PAID'};
@@ -265,24 +266,62 @@ function classifyFullMail(email,allowUpdates=false){
    suggestedStatus:kind==='BILL'?'POSSIBLY_DUE':strong?'LIKELY_PAID':'PURCHASE_UNVERIFIED'
  };
 }
+function duplicatePair(a,b){
+ if(a.kind!==b.kind||a.currency!==b.currency||Math.round(a.amount*100)!==Math.round(b.amount*100))return null;
+ if(a.key===b.key||a.status==='IGNORED'||b.status==='IGNORED')return null;
+ if((a.signal==='CARD_REPAYMENT')!== (b.signal==='CARD_REPAYMENT'))return null;
+ const pair=[a.key,b.key].sort().join('|');
+ const decisions=[a,b].map(x=>String(x.duplicateDecision||'')).filter(x=>x.endsWith('|'+pair));
+ if(decisions.some(x=>x.startsWith('distinct|')))return null;
+ if(decisions.some(x=>x.startsWith('same|')))return {pair,score:100,reason:'You confirmed these emails describe the same payment'};
+ const day=x=>x.transactionDate||dateKey(x.date);
+ const sameDay=day(a)===day(b);
+ const minutes=Math.abs(Date.parse(a.date)-Date.parse(b.date))/60000;
+ const normalize=x=>String(x||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>=4&&!['receipt','payment','confirmation','your','from','with','company','limited','incorporated','calendly','stripe','transaction','meeting','minute','minutes','paid','successful','order'].includes(w));
+ const tokens=x=>new Set(normalize(x.merchant+' '+x.subject+' '+(x.matchContext||'')));
+ const ta=tokens(a),tb=tokens(b),common=[...ta].filter(t=>tb.has(t));
+ const cross=/calendly|booking|appointment|consultation|meeting/i.test(a.subject+' '+a.merchant+' '+a.matchContext+' '+b.subject+' '+b.merchant+' '+b.matchContext);
+ const sharedRef=a.reference&&b.reference&&a.reference===b.reference;
+ if(sharedRef&&(sameDay||minutes<1440))return {pair,score:95,reason:'Matching transaction reference and amount'};
+ if(!sameDay&&!(minutes<=30))return null;
+ // Two equal purchases alone are not evidence of duplication. Require temporal proximity plus a link, or ask.
+ if(a.signal==='CARD_REPAYMENT'&&b.signal==='CARD_REPAYMENT'&&minutes<=5)return {pair,score:85,reason:'Two repayment confirmations close together'};
+ if(common.length&&cross&&(minutes<=60||sameDay))return {pair,score:80,reason:'Matching amount/date and shared merchant or appointment wording'};
+ if(minutes<=15&&cross)return {pair,score:70,reason:'Matching amount within 15 minutes, with appointment or booking evidence'};
+ if(common.length&&minutes<=15)return {pair,score:65,reason:'Matching amount, nearby email times and shared merchant wording'};
+ if(minutes<=5)return {pair,score:60,reason:'Same amount and currency within five minutes; please confirm'};
+ return null;
+}
+function reconcileDuplicates(items){
+ const list=items.map(c=>({...c,possibleDuplicateOf:null,duplicateReason:null,duplicatePair:null}));
+ // Prefer a direct receipt with explicit settlement evidence over a booking notification.
+ const quality=c=>(c.confidence==='HIGH'?20:0)+(/\breceipt\b/i.test(c.subject)?15:0)+(/explicit (?:amount paid|amount charged|total paid)/i.test(c.evidence||'')?10:0)-(/via calendly|booking confirmation|confirmed:|appointment/i.test(c.subject+' '+c.merchant)?8:0);
+ const groups=new Map();
+ for(const c of list){const key=c.kind+'|'+c.currency+'|'+Math.round(c.amount*100);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(c)}
+ for(const group of groups.values()){
+   group.sort((a,b)=>quality(b)-quality(a)||a.date.localeCompare(b.date)||a.key.localeCompare(b.key));
+   const anchors=[];
+   for(const c of group){
+     const matches=anchors.map(anchor=>({anchor,match:duplicatePair(anchor,c)})).filter(x=>x.match).sort((a,b)=>b.match.score-a.match.score);
+     const best=matches[0];
+     if(best){c.possibleDuplicateOf=best.anchor.key;c.duplicateReason=best.match.reason;c.duplicatePair=best.match.pair;c.duplicateConfirmed=best.match.score===100?'yes':null}
+     else{c.duplicateConfirmed=null;anchors.push(c)}
+   }
+ }
+ return list.sort((a,b)=>b.date.localeCompare(a.date));
+}
 function mergePrimary(oldItems,newItems,cutoffDate,fullyScanned){
  const old=new Map((oldItems||[]).filter(x=>x.analysisVersion===5).map(x=>[x.key,x]));
  const fresh=(newItems||[]).map(x=>{
    const prev=old.get(x.key);
-   return {...x,status:prev?.status||x.status,reviewedAt:prev?.reviewedAt||null};
+   return {...x,status:prev?.status||x.status,reviewedAt:prev?.reviewedAt||null,duplicateDecision:prev?.duplicateDecision||x.duplicateDecision||null};
  });
  const merged=new Map();
  for(const item of old.values()){
    if(!fullyScanned || String(item.date)<cutoffDate)merged.set(item.key,item);
  }
  for(const item of fresh)merged.set(item.key,item);
- const refs=new Map();
- return [...merged.values()].sort((a,b)=>b.date.localeCompare(a.date)).map(item=>{
-   const key=item.signal==='CARD_REPAYMENT'?'repayment|'+item.merchant.toLowerCase()+'|'+(item.transactionDate||dateKey(item.date))+'|'+item.currency+'|'+item.amount:item.reference ? item.kind+'|'+item.merchant.toLowerCase()+'|'+item.reference+'|'+item.currency+'|'+item.amount : null;
-   const dup=key?refs.get(key):null;
-   if(key&&!dup)refs.set(key,item.key);
-   return {...item,possibleDuplicateOf:dup||null};
- });
+ return reconcileDuplicates([...merged.values()]);
 }
 function pendingGroups(items,today){
  const groups={overdue:[],upcoming:[],unknown:[],paid:[]};
@@ -346,14 +385,14 @@ function mergeMonth(old,fresh,month,complete){
  const prior=new Map(old.map(c=>[c.key,c]));
  const keep=old.filter(c=>!complete||dateKey(c.date).slice(0,7)!==month);
  const map=new Map(keep.map(c=>[c.key,c]));
- for(const c of fresh){const p=prior.get(c.key);map.set(c.key,{...c,status:p?.status||c.status,reviewedAt:p?.reviewedAt||null});}
+ for(const c of fresh){const p=prior.get(c.key);map.set(c.key,{...c,status:p?.status||c.status,reviewedAt:p?.reviewedAt||null,duplicateDecision:p?.duplicateDecision||c.duplicateDecision||null});}
  return mergePrimary([], [...map.values()], '',false);
 }
 function visiblePayments(items,month){
  return (items||[]).filter(x=>x.kind==='PAYMENT'&&x.analysisVersion===5&&
    x.confidence==='HIGH'&&String(x.date).slice(0,7)===month&&!['IGNORED','DUE'].includes(x.status)&&!x.possibleDuplicateOf);
 }
-const API={structuredReceipt,inspectEvidence,normalizeFinanceText,isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
+const API={duplicatePair,reconcileDuplicates,structuredReceipt,inspectEvidence,normalizeFinanceText,isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
 if(typeof module!=='undefined'&&module.exports)module.exports=API;
 root.LedgerStrict=API;
 })(typeof window!=='undefined'?window:globalThis);

@@ -145,7 +145,7 @@ function applyAccount(record,email){
  state.legacy=[...(x?.legacy||[]),...payments.filter(c=>!valid(c)),...bills.filter(c=>!valid(c))]
    .filter(Boolean).slice(-500);
  state.messages=(Array.isArray(x?.messages)?x.messages:[]).filter(m=>Strict.isPrimary(m.labelIds)||(x?.includeUpdates&&Strict.isFinancialUpdate(m.labelIds)));
- state.payments=payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
+ state.payments=Strict.reconcileDuplicates(payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)})));
  state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
  state.scanStats=null;state.pageToken=null;state.coverage=Object.fromEntries(Object.entries(x?.coverage||{}).filter(([k,v])=>v.build===11));state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
@@ -341,7 +341,7 @@ function reviewCandidate(c,next){
  try{c.status=E.reviewTransition(E.normalizeStatus(c.status),next)}
  catch(err){toast(err.message);return}
  c.reviewedAt=new Date().toISOString();
- render();saveHistory();
+ state.payments=Strict.reconcileDuplicates(state.payments);state.bills=Strict.reconcileDuplicates(state.bills);render();saveHistory();
 }
 function itemCard(c){
  const node=document.createElement('details');
@@ -349,7 +349,7 @@ function itemCard(c){
  const status=E.normalizeStatus(c.status);
  const statusText=status==='PAID'?'You marked paid':status==='DUE'?'You marked due':
    status==='IGNORED'?'Ignored':c.kind==='BILL'?'Bill notice':
-   c.confidence==='HIGH'?'Email reports completed':'Needs review';
+   c.possibleDuplicateOf?'Duplicate · not counted':c.confidence==='HIGH'?'Email reports completed':'Needs review';
  const top=document.createElement('summary');
  const title=document.createElement('div');title.className='transaction-title';
  const merchant=document.createElement('strong');merchant.textContent=c.merchant;
@@ -368,8 +368,22 @@ function itemCard(c){
  const subject=document.createElement('p');subject.textContent='Email: '+c.subject;
  body.append(explanation,proof,subject);
  if(c.dueDate){const due=document.createElement('p');due.textContent='Due date mentioned: '+c.dueDate;body.append(due)}
- if(c.possibleDuplicateOf){const dup=document.createElement('p');dup.textContent='Possible duplicate receipt (same transaction reference); excluded from totals until reviewed.';body.append(dup)}
+ if(c.possibleDuplicateOf){
+   const other=state.payments.find(x=>x.key===c.possibleDuplicateOf)||state.bills.find(x=>x.key===c.possibleDuplicateOf);
+   const dup=document.createElement('p');dup.textContent=(c.duplicateConfirmed==='yes'?'Confirmed duplicate of ':'Possible duplicate of ')+(other?.merchant||'another payment')+' · '+money(c.amount,c.currency)+'. '+(c.duplicateReason||'Matching payment evidence')+'. Counted once until you decide.';body.append(dup);
+   if(other){const pairActions=document.createElement('div');pairActions.className='actions';
+     for(const [decision,text] of [['same','Same payment — keep one'],['distinct','Separate payments — count both']]){
+       const btn=document.createElement('button');btn.type='button';btn.className='secondary';btn.textContent=text;btn.onclick=()=>{
+         c.duplicateDecision=decision+'|'+[c.key,other.key].sort().join('|');
+         state.payments=Strict.reconcileDuplicates(state.payments);state.bills=Strict.reconcileDuplicates(state.bills);
+         render();saveHistory();toast(decision==='same'?'Duplicate confirmed. Counted once.':'Both payments will be counted.');
+       };pairActions.append(btn);
+     }
+     const source=document.createElement('button');source.type='button';source.className='secondary';source.textContent='Open matching email';source.onclick=()=>window.open('https://mail.google.com/mail/?authuser='+encodeURIComponent(state.email||'')+'#all/'+encodeURIComponent(other.messageId),'_blank','noopener,noreferrer');pairActions.append(source);body.append(pairActions);
+   }
+ }
  const actions=document.createElement('div');actions.className='actions';
+ if(c.duplicateDecision){const undo=document.createElement('button');undo.type='button';undo.className='secondary';undo.textContent='Reset duplicate decision';undo.onclick=()=>{c.duplicateDecision=null;state.payments=Strict.reconcileDuplicates(state.payments);state.bills=Strict.reconcileDuplicates(state.bills);render();saveHistory()};actions.append(undo)}
  for(const [next,text] of [['PAID','I paid this'],['DUE','Still due / unpaid'],['IGNORED','Not mine / ignore'],['REVIEW','Undo my decision']]){
    if(status===next)continue;
    const btn=document.createElement('button');btn.className='secondary';btn.type='button';btn.textContent=text;
@@ -450,7 +464,7 @@ function render(){
  const audit=el('scanAudit');audit.hidden=!coverage?.reasons;const reasonNode=el('scanReasons');reasonNode.replaceChildren();
  for(const [reason,count] of Object.entries(coverage?.reasons||{}).sort((a,b)=>b[1]-a[1])){const row=document.createElement('p');row.textContent=reason+' · '+count;reasonNode.append(row)}
  if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
- const uncertain=[...state.payments,...state.bills].filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf));
+ const uncertain=[...state.payments,...state.bills].filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||(c.possibleDuplicateOf&&c.duplicateConfirmed!=='yes')));
  el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
  timeline(el('recent'),m.entries,timelineFilter);
  const select=el('monthSelect');select.replaceChildren(new Option(el('monthLabel').textContent,current));select.value=current;
@@ -491,9 +505,9 @@ function renderPayments(){
  const list=source.filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&(month==='all'||(c.transactionDate||Strict.dateKey(c.date)).slice(0,7)===month)&&
    (c.merchant+' '+c.subject).toLowerCase().includes(query)&&
    (status==='clear'?paymentEligible(c):
-     status==='needs-attention'?E.normalizeStatus(c.status)==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf):
-     status==='repayment'?c.signal==='CARD_REPAYMENT':status==='all'?true:E.normalizeStatus(c.status)===status));
- el('confirmedTotal').textContent=moneyList(state.payments.filter(c=>c.analysisVersion===5),'PAID');
+     status==='needs-attention'?E.normalizeStatus(c.status)==='REVIEW'&&(c.confidence!=='HIGH'||(c.possibleDuplicateOf&&c.duplicateConfirmed!=='yes')):
+     status==='duplicates'?Boolean(c.possibleDuplicateOf||c.duplicateDecision):status==='repayment'?c.signal==='CARD_REPAYMENT':status==='all'?true:E.normalizeStatus(c.status)===status));
+ el('confirmedTotal').textContent=moneyList(state.payments.filter(c=>c.analysisVersion===5&&!c.possibleDuplicateOf),'PAID');
  const node=el('paymentList');node.replaceChildren();
  if(!list.length){
    node.className='empty';node.textContent=status==='clear'?'No clear payment receipts in this view. Uncertain emails are kept separately.':

@@ -15,7 +15,7 @@ function snapshot(data){
  });
  const cleanCandidate=c=>{
    const x={};
-   for(const key of ['key','messageId','merchant','subject','date','transactionDate','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion','signal','evidenceLevel','reference','confidence','why']){
+   for(const key of ['key','messageId','merchant','subject','date','transactionDate','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','duplicateReason','duplicatePair','duplicateConfirmed','duplicateDecision','matchContext','reviewedAt','suggestedStatus','reviewSuggestion','signal','evidenceLevel','reference','confidence','why']){
      const value=c[key];x[key]=value==null?null:String(value).slice(0,key==='source'?650:450);
    }
    x.analysisVersion=Number(c.analysisVersion)||0;

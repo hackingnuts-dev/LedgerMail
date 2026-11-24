@@ -1,4 +1,4 @@
-name: Deploy LedgerMail to Netlify
+name: Validate LedgerMail
 on:
   push:
     branches: [main]
@@ -41,12 +41,3 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --quiet CairoSVG==2.7.1
           python -c 'import cairosvg; [cairosvg.svg2png(url="web/icon.svg", write_to="web/"+name, output_width=size, output_height=size) for name,size in [("apple-touch-icon.png",180),("icon-192.png",192),("icon-512.png",512)]]'
-      - name: Publish via official Netlify MCP
-        env:
-          NETLIFY_MCP_PROXY_PATH: ${{ secrets.NETLIFY_MCP_PROXY_PATH }}
-        run: |
-          if [ -z "$NETLIFY_MCP_PROXY_PATH" ]; then
-            echo "::error::NETLIFY_MCP_PROXY_PATH secret is missing."
-            exit 1
-          fi
-          npx -y @netlify/mcp@latest --site-id 7b8186a6-48ed-4873-83f3-19a2210b344f --proxy-path "$NETLIFY_MCP_PROXY_PATH"
