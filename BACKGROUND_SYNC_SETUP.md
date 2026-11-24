@@ -45,13 +45,15 @@ changed scope, deleted server data, or expired client session will require recon
 3. Netlify `mail-schedule` runs approximately **every 10 minutes**, not instantly.
    It incrementally reads Gmail history and refetches a recent window if its history
    cursor has expired.
-4. The first connection backfills up to 32 days, processing bounded batches over multiple
-   scheduled runs. The app can still manually scan a selected historical month.
-5. Open LedgerMail, choose **Connect Gmail** and complete the Google consent screen once.
+4. The first connection queues an asynchronous background backfill for up to 32 days.
+   Scheduled runs resume incomplete backfills and collect later changes. The app can still manually scan a selected historical month.
+5. Verify the Netlify Functions dashboard lists `mail`, `mail-schedule`, and
+   `mail-scan-background`. OAuth credentials must be provisioned before the flow is usable.
+6. Open LedgerMail, choose **Connect Gmail** and complete the Google consent screen once.
    The session is stored as an HttpOnly, Secure, SameSite cookie (90 days, renewed on use).
-6. Once active, the phone can be locked. The server will continue checking for mail; open
+7. Once active, the phone can be locked. The server will continue checking for mail; open
    the app to pull cached changes and classify financial email locally.
-7. Review Netlify Functions logs for `mail-schedule` and observe `syncStatus` in the app.
+8. Review Netlify Functions logs for `mail-schedule` and observe `syncStatus` in the app.
    The current design polls rather than using Gmail Pub/Sub push. It's periodic, not
    real-time delivery.
 
