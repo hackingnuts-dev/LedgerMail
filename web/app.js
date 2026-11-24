@@ -639,7 +639,7 @@ function openBreakdown(filter='ALL'){
  if(!el('breakdownDialog').open)el('breakdownDialog').showModal();
 }
 el('dashboardMonth').onchange=()=>{if(state.syncPhase==='RUNNING')return;const month=el('dashboardMonth').value;try{Strict.monthBounds(month)}catch{return}state.selectedMonth=month;timelineFilter='ALL';render();saveHistory()};
-el('includeUpdates').onchange=()=>{if(state.syncPhase==='RUNNING')return;state.includeUpdates=el('includeUpdates').checked;render();saveHistory()};
+el('includeUpdates').onchange=()=>{if(state.syncPhase==='RUNNING')return;state.includeUpdates=el('includeUpdates').checked;render();saveHistory();if(backendAvailable&&state.email){localStorage.removeItem('ledgermail.bgCursor.'+state.email);pullBackgroundMail()}};
 el('scanMonth').onclick=syncFinancial;
 el('dueTile').onclick=()=>openBreakdown('DUE');
 el('expectedTile').onclick=()=>openBreakdown('EXPECTED');
