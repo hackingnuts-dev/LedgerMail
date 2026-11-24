@@ -51,8 +51,8 @@ function parseGmailFull(raw,allowUpdates=false){
  const h=Object.fromEntries((raw.payload?.headers||[]).map(x=>[String(x.name||'').toLowerCase(),String(x.value||'')]));
  const bucket={plain:[],html:[],depth:0};
  mimeBodies(raw.payload,bucket);
- const plain=bucket.plain.filter(Boolean).join('\n').trim();
- const htmlText=htmlToText(bucket.html.join('\n')).trim();
+ const plain=normalizeFinanceText(bucket.plain.filter(Boolean).join('\n')).trim();
+ const htmlText=normalizeFinanceText(htmlToText(bucket.html.join('\n'))).trim();
  const body=(!plain||(!currencyAmounts(plain).length&&currencyAmounts(htmlText).length))?htmlText:plain;
  // Fail closed: snippet is never used as a substitute for the full body.
  if(!body)return null;
@@ -63,7 +63,7 @@ function parseGmailFull(raw,allowUpdates=false){
    id:String(raw.id),threadId:String(raw.threadId||raw.id),
    date:d.toISOString(),sender:h.from||'Unknown sender',
    recipient:h.to||'',subject:h.subject||'(No subject)',
-   body,labels:raw.labelIds||[],headers:h
+   body,alternateBody:htmlText&&htmlText!==body?htmlText:null,labels:raw.labelIds||[],headers:h
  };
 }
 function currencyAmounts(text){
@@ -106,11 +106,71 @@ function transactionReference(text){
  const m=String(text).match(/\b(?:transaction (?:id|ref(?:erence)?)|order (?:number|no\.?|#)|receipt (?:number|no\.?|#)|confirmation (?:number|#))\s*[:#-]?\s*([A-Z0-9-]{5,32})\b/i);
  return m?.[1]?.toUpperCase()||null;
 }
+function normalizeFinanceText(value){
+ return String(value||'').normalize('NFKC').replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g,'').replace(/[\u00a0\u202f]/g,' ').replace(/\r\n?/g,'\n');
+}
+function inspectEvidence(email,allowUpdates=false){
+ const reject=reason=>({candidate:null,reason});
+ if(!email||!(isPrimary(email.labels)||(allowUpdates&&isFinancialUpdate(email.labels))))return reject('category');
+ const subject=normalizeFinanceText(email.subject),body=normalizeFinanceText(trimQuoted(email.body));
+ const text=subject+'\n'+body;
+ if(!body.trim())return reject('no readable body');
+ if(OTP.test(subject)||OTP.test(body.slice(0,650)))return reject('security / OTP');
+ if(PROMO_SUBJECT.test(subject)||PROMO_BODY.test(body.slice(0,900)))return reject('marketing');
+ if(INCOMING.test(subject+' '+body.slice(0,1000))||TRANSFER.test(subject+' '+body.slice(0,1000)))return reject('incoming / transfer');
+ if(/\b(payment (?:failed|declined|cancelled|canceled|reversed)|transaction (?:declined|failed|reversed)|not (?:paid|charged)|no payment (?:was )?made)\b/i.test(text))return reject('failed / reversed');
+ const receipt=/\b(receipt|payment confirmation|paid invoice|tax invoice|order confirmation|transaction alert|purchase alert|payment successful|payment received|card transaction)\b/i.test(subject);
+ const completed=/\b(?:paid|debited|charged|payment (?:received|successful|completed|processed)|transaction (?:successful|completed|approved)|purchase (?:completed|approved)|thank you for your (?:payment|purchase)|status\s*[:\-]?\s*(?:paid|succeeded|successful))\b/i.test(body);
+ const receiptDetail=/\b(?:receipt (?:number|date|#)|payment (?:method|details|date)|transaction (?:id|date|reference)|card ending|invoice (?:number|#))\b/i.test(body);
+ const bill=/\b(?:amount due|total due|balance due|payment due|due date|pay by|bill amount|outstanding balance|statement balance|minimum payment|payment reminder)\b/i.test(text);
+ const scheduled=/\b(?:scheduled payment|upcoming payment|will be charged|will be debited|automatic payment scheduled|autopay scheduled)\b/i.test(text);
+ const relevant=receipt||completed||bill||scheduled||/\b(?:invoice|statement|payment|transaction|purchase|order|subscription|renewal)\b/i.test(subject);
+ if(!relevant)return reject('not financial');
+ // Read all explicitly formatted amounts, plus localized Rupee prefix.
+ const amounts=currencyAmounts(body);
+ for(const m of body.matchAll(/\b(?:Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)/gi)){
+   const amount=Number(m[1].replace(/,/g,''));if(amount>0&&amount<1e8&&!amounts.some(x=>x.start===m.index))amounts.push({amount,currency:'INR',start:m.index,end:m.index+m[0].length});
+ }
+ if(!amounts.length)return reject('financial wording, no readable currency amount');
+ const ranked=amounts.map(x=>{
+   const start=body.lastIndexOf('\n',x.start)+1,end=body.indexOf('\n',x.end);
+   const line=body.slice(start,end<0?body.length:end);
+   const prev=body.slice(Math.max(0,start-100),start).trim().split('\n').at(-1)||'';
+   const pre=body.slice(start,x.start).trim(),after=body.slice(x.end,end<0?body.length:end);
+   const label=(pre||prev).trim();
+   const explicitDue=/\b(?:amount due|total due|balance due|statement balance|outstanding balance|bill amount|payment due)\b/i.test(label+' '+after);
+   const explicitPaid=/\b(?:amount paid|total paid|amount charged|amount debited|payment amount|transaction amount|charged|debited|paid)\b/i.test(label+' '+after);
+   const total=/^(?:total|grand total|total amount|amount|payment total|invoice total)\s*[:\-]?$/i.test(label);
+   const negative=/\b(?:subtotal|tax|shipping|discount|savings|reward|cashback|available credit|credit limit|minimum payment|minimum due)\b/i.test(line);
+   const score=negative?-20:(explicitDue||explicitPaid?12:total?9:amounts.length===1?4:0);
+   return {...x,score,explicitDue,explicitPaid,total};
+ }).sort((a,b)=>b.score-a.score||a.start-b.start);
+ const hit=ranked[0];
+ if(!hit||hit.score<0)return reject('only non-payment amounts');
+ const kind=bill&&!completed||hit.explicitDue?'BILL':'PAYMENT';
+ const confident=kind==='BILL'?(hit.explicitDue&&!scheduled):(!scheduled&&(completed&&(hit.explicitPaid||hit.total||amounts.length===1)||receipt&&receiptDetail&&hit.total));
+ const date=new Date(email.date);
+ if(!Number.isFinite(date.getTime()))return reject('invalid date');
+ const merchant=String(email.sender||'Unknown sender').split('<')[0].replace(/^["']|["']$/g,'').trim().slice(0,65)||'Unknown sender';
+ const dueMatch=text.match(/\b(?:due date|payment due|pay by|scheduled (?:for|on))\s*[:\-]?\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4}|\d{4}-\d{2}-\d{2})/i);
+ const dueDate=dueMatch&&!Number.isNaN(Date.parse(dueMatch[1]))?new Date(dueMatch[1]).toISOString().slice(0,10):null;
+ return {reason:confident?'structured payment evidence':'financial email needs review',candidate:{
+   key:email.id,messageId:email.id,merchant,subject,date:date.toISOString(),amount:Math.round(hit.amount*100)/100,currency:hit.currency,
+   category:root.LedgerEngine?.category(subject+' '+merchant)||'Other',kind,status:'REVIEW',confidence:confident?'HIGH':'REVIEW',
+   signal:kind==='BILL'?'BILL_NOTICE':confident?'COMPLETION_EMAIL':'POSSIBLE_RECEIPT',
+   evidenceLevel:isFinancialUpdate(email.labels)?'UPDATES_FULL':'PRIMARY_FULL',analysisVersion:5,reference:transactionReference(text),dueDate,
+   evidence:confident?'Structured amount and transaction context found':'Possible financial email; review before counting',
+   source:'Amount identified: '+hit.currency+' '+hit.amount.toFixed(2),
+   reviewSuggestion:confident?'Email evidence only; verify against your account.':'Confirm the amount and status using the original email.',
+   suggestedStatus:kind==='BILL'?'POSSIBLY_DUE':confident?'LIKELY_PAID':'PURCHASE_UNVERIFIED'
+ }};
+}
 function classifyFullMail(email,allowUpdates=false){
  if(!email||!(isPrimary(email.labels)||(allowUpdates&&isFinancialUpdate(email.labels)))||!email.body)return null;
- const subject=String(email.subject||'').trim(),body=trimQuoted(email.body),lead=body.slice(0,1300);
+ const subject=normalizeFinanceText(email.subject).trim(),body=normalizeFinanceText(trimQuoted(email.body)),lead=body.slice(0,1300);
  const intro=(subject+'\n'+lead);
  if(OTP.test(subject)||OTP.test(lead.slice(0,650)))return null;
+ if(/\b(payment (?:failed|declined|cancelled|canceled|reversed)|transaction (?:declined|failed|reversed)|not (?:paid|charged))\b/i.test(subject+' '+lead))return null;
  if(PROMO_SUBJECT.test(subject))return null;
  const receiptSubject=/\b(receipt|paid invoice|payment confirmation)\b/i.test(subject);
  const paidBody=COMPLETED.test(body)||/\b(payment status\s*[:\-]?\s*paid|status\s*[:\-]?\s*(paid|succeeded)|paid with|paid via|amount paid|total paid|charged on)\b/i.test(body);
@@ -219,7 +279,7 @@ function monthlyModel(payments,bills,month,today){
  const clean=c=>c&&!c.possibleDuplicateOf&&!['IGNORED'].includes(c.status);
  const paid=c=>clean(c)&&c.kind==='PAYMENT'&&c.status!=='DUE'&&(c.status==='PAID'||c.confidence==='HIGH');
  const made=payments.filter(c=>paid(c)&&current(c)).map(c=>({...c,bucket:'MADE',timelineDate:dateKey(c.date)}));
- const due=[...bills,...payments.filter(c=>c.status==='DUE')].filter(c=>clean(c)&&c.status!=='PAID'&&(c.dueDate?c.dueDate.slice(0,7)===month:current(c))).map(c=>({...c,bucket:'DUE',timelineDate:c.dueDate||dateKey(c.date)}));
+ const due=[...bills,...payments.filter(c=>c.status==='DUE')].filter(c=>clean(c)&&c.status!=='PAID'&&(c.confidence==='HIGH'||c.status==='DUE')&&(c.dueDate?c.dueDate.slice(0,7)===month:current(c))).map(c=>({...c,bucket:'DUE',timelineDate:c.dueDate||dateKey(c.date)}));
  const observed=new Set([...made,...due].map(merchantKey));
  const history=new Map();
  for(const c of payments.filter(paid)){
@@ -259,7 +319,7 @@ function visiblePayments(items,month){
  return (items||[]).filter(x=>x.kind==='PAYMENT'&&x.analysisVersion===5&&
    x.confidence==='HIGH'&&String(x.date).slice(0,7)===month&&!['IGNORED','DUE'].includes(x.status)&&!x.possibleDuplicateOf);
 }
-const API={isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
+const API={inspectEvidence,normalizeFinanceText,isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
 if(typeof module!=='undefined'&&module.exports)module.exports=API;
 root.LedgerStrict=API;
 })(typeof window!=='undefined'?window:globalThis);

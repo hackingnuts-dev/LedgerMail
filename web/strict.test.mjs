@@ -82,3 +82,16 @@ const upd=S.classifyFullMail(S.parseGmailFull(update,true),true);
 assert(upd&&upd.kind==='PAYMENT'&&upd.evidenceLevel==='UPDATES_FULL');
 assert.equal(extracted(msg('false-total','Limited time offer','Payment method: card. Total: $285.00')),null);
 console.log('Receipt formats and opt-in Updates payment detection passed');
+
+const ev=(subject,body,labels=['CATEGORY_PERSONAL'])=>S.inspectEvidence(S.parseGmailFull(msg('new-evidence',subject,body,labels),true),true);
+assert.equal(ev('Your payment receipt','Payment status: Paid\nTotal:\u00a0$\u200b285.00').candidate.amount,285);
+assert.equal(ev('Your payment receipt','Payment status: Paid\nTotal: 285.00 USD').candidate.confidence,'HIGH');
+assert.equal(ev('Bank account transaction','Your account has been debited by Rs. 1,500.00').candidate.amount,1500);
+assert.equal(ev('Your payment receipt','Payment scheduled: you will be charged $25.00').candidate.confidence,'REVIEW');
+assert.equal(ev('Payment failed','Your payment failed. Transaction amount $285.00').candidate,null);
+assert.equal(ev('Offer today','Buy now and save $285.00').candidate,null);
+assert.equal(ev('OTP for transaction','Your OTP is 123456. Amount $285.00').candidate,null);
+const review=ev('Your invoice','Invoice number 12345\nTotal: $285.00');
+assert(review.candidate&&review.candidate.confidence==='REVIEW');
+assert.equal(ev('Monthly statement','Amount due: $150.00').candidate.kind,'BILL');
+console.log('Independent evidence pass, Unicode, localized amount, and review fallback tests passed');

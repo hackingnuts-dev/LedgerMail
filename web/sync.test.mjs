@@ -15,6 +15,7 @@ const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  ],body:{data:b64(body),size:body.length}}
 });
 const messages={
+ fallback:full('fallback','Bank account transaction','Your account has been debited by Rs. 1,500.00'),
  update:full('update','Your Example Legal receipt [#1018-8509]','Receipt number 1018-8509\nPayment method: Visa ending 4242\nTotal: 42.00 USD',['CATEGORY_UPDATES']),
  receipt:full('receipt','Your purchase receipt','Your card was charged $285.00. Payment completed.'),
  ad:full('ad','Limited time sale $999','Payment completed for promotional example. Save up to $999.00. Shop now. Unsubscribe.',['CATEGORY_PROMOTIONS']),
@@ -39,7 +40,7 @@ w.fetch=async(url,opts)=>{
    assert(u.searchParams.get('q').includes('category:primary'));
    assert(!u.searchParams.get('q').includes('in:anywhere'));
    assert(u.searchParams.get('q').includes('after:'));assert(u.searchParams.get('q').includes('before:'));
-   return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp'].map(id=>({id})),nextPageToken:'page2'})};
+   return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp','fallback'].map(id=>({id})),nextPageToken:'page2'})};
  }
  const id=u.pathname.match(/\/messages\/([^/]+)$/)?.[1];
  assert.equal(u.searchParams.get('format'),'full','all financial parsing must inspect full message body');
@@ -57,8 +58,9 @@ w.document.getElementById('connect').click();
 for(let i=0;i<95;i++){await wait();const t=w.document.getElementById('syncStatus').textContent;if(t.includes('Primary scan complete')||t.includes('Partial scan'))break}
 const d=w.document;
 assert(d.getElementById('syncStatus').textContent.includes('Primary scan complete'),d.getElementById('syncStatus').textContent);
-assert.equal(d.getElementById('monthTotal').textContent,'$285.00','only clear Primary purchase is counted');
-assert.equal(d.getElementById('paymentCount').textContent,'1');
+assert(d.getElementById('monthTotal').textContent.includes('$285.00'),'clear Primary USD purchase counted');
+assert(d.getElementById('monthTotal').textContent.includes('1,500'),'localized amount recovered');
+assert.equal(d.getElementById('paymentCount').textContent,'2');
 assert.equal(d.getElementById('billCount').textContent,'1 notices to check');
 assert(!d.getElementById('recent').textContent.includes('$899.00'),'OTP excluded');
 assert(!d.getElementById('recent').textContent.includes('$999.00'),'promotion excluded');
@@ -67,13 +69,15 @@ assert(calls.some(x=>x.includes('format=full')),'Gmail full-format API used');
 assert(calls.every(x=>!x.includes('format=metadata')),'finance scan must not use metadata mode');
 await new Promise(r=>setTimeout(r,140));
 const saved=await w.LedgerStore.read('qa@gmail.com');
-assert.equal(saved.payments.length,1);
+assert.equal(saved.payments.length,2);
+assert(Object.keys(saved.coverage)[0]);
+assert(Object.values(saved.coverage)[0].reasons['Strong financial evidence']>=2);
 assert.equal(saved.bills.length,1);
 assert(!JSON.stringify(saved).includes('test-scope-token'),'OAuth tokens never persisted');
 assert(!JSON.stringify(saved).includes('Your card was charged $285.00. Payment completed.'),'entire body not persisted');
 d.getElementById('includeUpdates').checked=true;d.getElementById('includeUpdates').dispatchEvent(new w.Event('change',{bubbles:true}));
 d.getElementById('scanMonth').click();
-for(let i=0;i<95;i++){await wait();if(d.getElementById('monthTotal').textContent==='$327.00')break}
-assert.equal(d.getElementById('monthTotal').textContent,'$327.00','opt-in Updates receipt included');
+for(let i=0;i<95;i++){await wait();if(d.getElementById('monthTotal').textContent.includes('$327.00'))break}
+assert(d.getElementById('monthTotal').textContent.includes('$327.00'),'opt-in Updates receipt included');
 dom.window.close();
 console.log('Full-format Primary-only scan integration passed; promotion/OTP excluded, bill separated, private snapshot saved.');

@@ -221,6 +221,7 @@ async function syncFinancial(){
  const generation=state.generation,email=state.email,ctrl=new AbortController();
  state.controller=ctrl;
  let scanned=0,failed=0,skipped=0,unreadable=0;
+ const reasons={};const note=r=>{reasons[r]=(reasons[r]||0)+1};
  const accepted=[],summaries=[],seen=new Set(),startedAt=Date.now();
  const valid=()=>generation===state.generation&&state.email===email;
  const active=()=>valid()&&state.selectedMonth===month&&state.includeUpdates===includeUpdates;
@@ -240,14 +241,26 @@ async function syncFinancial(){
          if(!active())return;
          for(const row of result){
            scanned++;
-           if(row.status!=='fulfilled'){failed++;continue}
+           if(row.status!=='fulfilled'){failed++;note('Gmail fetch error');continue}
            const raw=row.value;
-           if(updates?!Strict.isFinancialUpdate(raw.labelIds):!Strict.isPrimary(raw.labelIds)){skipped++;continue}
+           if(updates?!Strict.isFinancialUpdate(raw.labelIds):!Strict.isPrimary(raw.labelIds)){skipped++;note('Excluded category');continue}
            const m=Strict.parseGmailFull(raw,updates);
-           if(!m){unreadable++;continue}
-           if(monthKey(m.date)!==month){skipped++;continue}
-           const c=Strict.classifyFullMail(m,updates);
-           if(!c){skipped++;continue}
+           if(!m){unreadable++;note('No readable message body');continue}
+           if(monthKey(m.date)!==month){skipped++;note('Outside selected month');continue}
+           const result=Strict.inspectEvidence(m,updates);
+           let c=Strict.classifyFullMail(m,updates);
+           if(!c||c.confidence!=='HIGH'){
+             if(result.candidate&&(!c||result.candidate.confidence==='HIGH'))c=result.candidate;
+             if(m.alternateBody&&(!c||c.confidence!=='HIGH')){
+               const alternative={...m,body:m.alternateBody,alternateBody:null};
+               const alt=Strict.inspectEvidence(alternative,updates);
+               const strictAlt=Strict.classifyFullMail(alternative,updates);
+               const best=strictAlt?.confidence==='HIGH'?strictAlt:alt.candidate||strictAlt;
+               if(best&&(!c||best.confidence==='HIGH'))c=best;
+             }
+           }
+           if(!c){skipped++;note(result.reason);continue}
+           note(c.confidence==='HIGH'?'Strong financial evidence':'Needs review');
            accepted.push(c);summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,snippet:'Financial email analyzed locally',labelIds:m.labels});
          }
          el('syncStatus').textContent='Checked '+scanned+' emails for '+month+' · '+accepted.length+' financial matches';
@@ -269,8 +282,8 @@ async function syncFinancial(){
    if(oldUpdateBills.length)state.bills=Strict.mergePrimary(state.bills,oldUpdateBills,'',false);
    state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
    state.lastSync=new Date().toISOString();
-   state.coverage={...state.coverage,[month]:{complete,scanned,accepted:accepted.length,skipped,unreadable,failed,updatedAt:state.lastSync,includeUpdates}};
-   state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,completed:complete,month,elapsedMs:Date.now()-startedAt};
+   state.coverage={...state.coverage,[month]:{complete,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:state.lastSync,includeUpdates}};
+   state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,completed:complete,month,elapsedMs:Date.now()-startedAt};
    setSyncPhase(complete?'COMPLETE':'PARTIAL');
    el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+accepted.length+' financial emails found';
    render();await saveHistory();toast('Month updated: '+accepted.length+' financial emails');
@@ -433,8 +446,11 @@ function render(){
  el('monthLabel').textContent=new Date(current+'-01T12:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'});
  el('paymentCount').textContent=String(m.made.length);el('billCount').textContent=m.due.length+' notices to check';el('expectedCount').textContent=m.expected.length+' estimates';
  const coverage=state.coverage[current];
+ el('scanOutcome').textContent=coverage&&coverage.scanned>0&&coverage.accepted===0?'No payment amounts were accepted. Open the scan explanation above to see why; zero does not mean no spending.':'';
+ const audit=el('scanAudit');audit.hidden=!coverage?.reasons;const reasonNode=el('scanReasons');reasonNode.replaceChildren();
+ for(const [reason,count] of Object.entries(coverage?.reasons||{}).sort((a,b)=>b[1]-a[1])){const row=document.createElement('p');row.textContent=reason+' · '+count;reasonNode.append(row)}
  if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
- const uncertain=state.payments.filter(c=>monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf));
+ const uncertain=[...state.payments,...state.bills].filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf));
  el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
  timeline(el('recent'),m.entries,timelineFilter);
  const select=el('monthSelect');select.replaceChildren(new Option(el('monthLabel').textContent,current));select.value=current;
@@ -471,7 +487,8 @@ function renderBills(){
 function renderPayments(){
  const query=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;
  const status=el('paymentStatusFilter')?.value||'clear';
- const list=state.payments.filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&(month==='all'||monthKey(c.date)===month)&&
+ const source=status==='needs-attention'?[...state.payments,...state.bills]:state.payments;
+ const list=source.filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&(month==='all'||monthKey(c.date)===month)&&
    (c.merchant+' '+c.subject).toLowerCase().includes(query)&&
    (status==='clear'?paymentEligible(c):
      status==='needs-attention'?E.normalizeStatus(c.status)==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf):
@@ -506,7 +523,7 @@ el('dueTile').onclick=()=>openBreakdown('DUE');
 el('expectedTile').onclick=()=>openBreakdown('EXPECTED');
 el('timelineAll').onclick=()=>openBreakdown('ALL');
 document.querySelectorAll('[data-timeline]').forEach(b=>b.onclick=()=>{timelineFilter=b.dataset.timeline;document.querySelectorAll('[data-timeline]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));timeline(el('recent'),model().entries,timelineFilter)});
-el('reviewNudge').onclick=()=>{el('paymentStatusFilter').value='needs-attention';route('payments')};
+el('reviewNudge').onclick=()=>{el('paymentStatusFilter').value='needs-attention';renderPayments();route('payments')};
 el('paymentSearch').oninput=renderPayments;
 el('monthSelect').onchange=renderPayments;
 el('paymentStatusFilter').onchange=renderPayments;
