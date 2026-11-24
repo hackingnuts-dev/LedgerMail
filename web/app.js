@@ -144,7 +144,7 @@ function applyAccount(record,email){
  const valid=c=>Number(c?.analysisVersion)===5&&['PRIMARY_FULL','UPDATES_FULL'].includes(c.evidenceLevel);
  state.legacy=[...(x?.legacy||[]),...payments.filter(c=>!valid(c)),...bills.filter(c=>!valid(c))]
    .filter(Boolean).slice(-500);
- state.messages=(Array.isArray(x?.messages)?x.messages:[]).filter(m=>Strict.isPrimary(m.labelIds));
+ state.messages=(Array.isArray(x?.messages)?x.messages:[]).filter(m=>Strict.isPrimary(m.labelIds)||(x?.includeUpdates&&Strict.isFinancialUpdate(m.labelIds)));
  state.payments=payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
@@ -247,7 +247,7 @@ async function syncFinancial(){
            if(!m){unreadable++;continue}
            if(monthKey(m.date)!==month){skipped++;continue}
            const c=Strict.classifyFullMail(m,updates);
-           if(!c||(updates&&c.kind!=='BILL')){skipped++;continue}
+           if(!c){skipped++;continue}
            accepted.push(c);summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,snippet:'Financial email analyzed locally',labelIds:m.labels});
          }
          el('syncStatus').textContent='Checked '+scanned+' emails for '+month+' · '+accepted.length+' financial matches';
@@ -261,13 +261,15 @@ async function syncFinancial(){
    if(!active())return;
    const complete=failed===0&&unreadable===0;
    const retainUpdates=items=>items;
+   const oldUpdatePayments=includeUpdates?[]:state.payments.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
    state.payments=Strict.mergeMonth(retainUpdates(state.payments),accepted.filter(c=>c.kind==='PAYMENT'),month,complete);
+   if(oldUpdatePayments.length)state.payments=Strict.mergePrimary(state.payments,oldUpdatePayments,'',false);
    const oldUpdateBills=includeUpdates?[]:state.bills.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
    state.bills=Strict.mergeMonth(retainUpdates(state.bills),accepted.filter(c=>c.kind==='BILL'),month,complete);
    if(oldUpdateBills.length)state.bills=Strict.mergePrimary(state.bills,oldUpdateBills,'',false);
    state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
    state.lastSync=new Date().toISOString();
-   state.coverage={...state.coverage,[month]:{complete,scanned,updatedAt:state.lastSync,includeUpdates}};
+   state.coverage={...state.coverage,[month]:{complete,scanned,accepted:accepted.length,skipped,unreadable,failed,updatedAt:state.lastSync,includeUpdates}};
    state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,completed:complete,month,elapsedMs:Date.now()-startedAt};
    setSyncPhase(complete?'COMPLETE':'PARTIAL');
    el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+accepted.length+' financial emails found';
@@ -393,7 +395,7 @@ function moneyList(items,status){
  return Object.entries(sums).map(([currency,total])=>money(total,currency)).join(' + ')||'$0.00';
 }
 let timelineFilter='ALL';
-function model(){return Strict.monthlyModel(state.payments,state.bills.filter(c=>state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL'),state.selectedMonth,Strict.dateKey(new Date()))}
+function model(){return Strict.monthlyModel(state.payments.filter(c=>state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL'),state.bills.filter(c=>state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL'),state.selectedMonth,Strict.dateKey(new Date()))}
 function sumItems(items){const totals={};for(const c of items)totals[c.currency]=(totals[c.currency]||0)+c.amount;return Object.entries(totals).map(([cur,n])=>money(n,cur)).join(' + ')||'$0.00'}
 function timeline(node,entries,filter='ALL'){
  node.replaceChildren();
@@ -431,7 +433,7 @@ function render(){
  el('monthLabel').textContent=new Date(current+'-01T12:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'});
  el('paymentCount').textContent=String(m.made.length);el('billCount').textContent=m.due.length+' notices to check';el('expectedCount').textContent=m.expected.length+' estimates';
  const coverage=state.coverage[current];
- if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + bill Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
+ if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
  const uncertain=state.payments.filter(c=>monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf));
  el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
  timeline(el('recent'),m.entries,timelineFilter);
@@ -469,7 +471,7 @@ function renderBills(){
 function renderPayments(){
  const query=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;
  const status=el('paymentStatusFilter')?.value||'clear';
- const list=state.payments.filter(c=>(month==='all'||monthKey(c.date)===month)&&
+ const list=state.payments.filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&(month==='all'||monthKey(c.date)===month)&&
    (c.merchant+' '+c.subject).toLowerCase().includes(query)&&
    (status==='clear'?paymentEligible(c):
      status==='needs-attention'?E.normalizeStatus(c.status)==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf):

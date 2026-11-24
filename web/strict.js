@@ -52,7 +52,8 @@ function parseGmailFull(raw,allowUpdates=false){
  const bucket={plain:[],html:[],depth:0};
  mimeBodies(raw.payload,bucket);
  const plain=bucket.plain.filter(Boolean).join('\n').trim();
- const body=plain||htmlToText(bucket.html.join('\n')).trim();
+ const htmlText=htmlToText(bucket.html.join('\n')).trim();
+ const body=(!plain||(!currencyAmounts(plain).length&&currencyAmounts(htmlText).length))?htmlText:plain;
  // Fail closed: snippet is never used as a substitute for the full body.
  if(!body)return null;
  const dateValue=Number(raw.internalDate);
@@ -73,7 +74,11 @@ function currencyAmounts(text){
    const amount=Number(m[2].replace(/,/g,''));
    if(amount>0&&Number.isFinite(amount)&&amount<1e8)a.push({amount,currency,start:m.index,end:(m.index||0)+m[0].length});
  }
- return a;
+ for(const m of String(text).matchAll(/\b((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)\s*(USD|INR|GBP|EUR|CAD|AUD)\b/gi)){
+   const amount=Number(m[1].replace(/,/g,'')),start=m.index,end=start+m[0].length;
+   if(amount>0&&amount<1e8&&!a.some(x=>start<x.end&&end>x.start))a.push({amount,currency:m[2].toUpperCase(),start,end});
+ }
+ return a.sort((x,y)=>x.start-y.start);
 }
 const OTP=/\b(otp|one[- ]time (passcode|password|code)|verification code|security code|transaction otp|your code to|authorize (the|your) transaction|verify (the|your) transaction|card verification|password reset)\b/i;
 const PROMO_SUBJECT=/\b(offer|offers|coupon|deal|deals|sale|savings|cashback offer|shop now|save (up to|big|\d)|extra \d+%|discount|newsletter|black friday|promotion|reward points|special promotion|advertisement|sponsored|limited time)\b/i;
@@ -107,7 +112,10 @@ function classifyFullMail(email,allowUpdates=false){
  const intro=(subject+'\n'+lead);
  if(OTP.test(subject)||OTP.test(lead.slice(0,650)))return null;
  if(PROMO_SUBJECT.test(subject))return null;
- const hasStrong=COMPLETED.test(subject+' '+body.slice(0,4500));
+ const receiptSubject=/\b(receipt|paid invoice|payment confirmation)\b/i.test(subject);
+ const paidBody=COMPLETED.test(body)||/\b(payment status\s*[:\-]?\s*paid|status\s*[:\-]?\s*(paid|succeeded)|paid with|paid via|amount paid|total paid|charged on)\b/i.test(body);
+ const receiptBody=receiptSubject&&/\b(receipt (?:number|date|#)|payment method|paid|charged|thank you for your payment|payment details|transaction (?:id|date)|card ending|payment date)\b/i.test(body);
+ const hasStrong=paidBody||receiptBody;
  const bill=BILL.test(subject+' '+body.slice(0,4500));
  if(!hasStrong&&!bill&&!SUBJECT_RECEIPT.test(subject))return null;
  if(PROMO_BODY.test(lead)&&(!SUBJECT_RECEIPT.test(subject)||!hasStrong||Boolean(email.headers?.['list-unsubscribe'])))return null;
@@ -125,13 +133,19 @@ function classifyFullMail(email,allowUpdates=false){
    const line=body.slice(start,endAt<0?body.length:endAt).trim();
    const pre=body.slice(Math.max(start,m.start-82),m.start);
    const near=body.slice(Math.max(start,m.start-82),Math.min(line.length+start,m.end+30));
-   const direct=kind==='BILL'?BILL_CONTEXT.test(pre+' '+line):AMOUNT_CONTEXT.test(pre+' '+line);
+   const prevLine=body.slice(Math.max(0,start-90),start).trim().split('\n').at(-1)||'';
+   const label=pre.trim()||prevLine;
+   const receiptTotal=kind==='PAYMENT'&&receiptSubject&&hasStrong&&/^(?:total|amount|total amount|payment total|amount paid|total paid)\s*[:\-]?\s*$/i.test(label);
+   const direct=kind==='BILL'?BILL_CONTEXT.test(pre+' '+line+' '+prevLine):AMOUNT_CONTEXT.test(pre+' '+line+' '+prevLine)||receiptTotal;
+
    const event=kind==='BILL'?BILL.test(line):COMPLETED.test(line);
    const discount=DISCOUNT_CONTEXT.test(line);
    let score=(direct?6:0)+(event?3:0)+(kind==='PAYMENT'&&SUBJECT_RECEIPT.test(subject)?2:0);
    if(/\b(total paid|grand total|total charged|amount paid|payment amount|amount debited|amount due|balance due)\b/i.test(pre))score+=5;
    if(/\b(subtotal|estimated|tax|shipping|item total)\b/i.test(pre))score-=9;
    if(discount)score-=9;
+   if(receiptTotal)score+=6;
+   if(/\b(minimum payment|minimum due)\b/i.test(pre)&&kind==='BILL')score-=3;
    if(m.start>12000)score-=2;
    if(score>0)candidates.push({...m,score,ctx,direct,event});
  }
@@ -197,7 +211,7 @@ function monthBounds(month){
 function dateKey(value){const d=new Date(value);return Number.isFinite(d.getTime())?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}
 function monthlyQuery(month,updates=false){
  const b=monthBounds(month);
- return (updates?'category:updates':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -category:promotions -category:social -category:forums -in:spam -in:trash'+(updates?' -category:primary':' -category:updates');
+ return (updates?'category:updates':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash';
 }
 function merchantKey(c){return String(c.merchant||'').toLowerCase().trim()+'|'+c.currency}
 function monthlyModel(payments,bills,month,today){

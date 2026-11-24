@@ -71,3 +71,14 @@ const m3=S.mergeMonth(historical,[mk('new','2026-11-10',22)],nov,true);assert.eq
 assert(S.monthlyQuery(nov).includes('category:primary'));assert(S.monthlyQuery(nov,true).includes('category:updates'));assert(!S.monthlyQuery(nov).includes('newer_than'));
 assert(S.isFinancialUpdate(['INBOX','CATEGORY_UPDATES']));assert(!S.isFinancialUpdate(['CATEGORY_UPDATES','CATEGORY_PROMOTIONS']));
 console.log('Month boundaries, forecast suppression, and month-preserving merge passed');
+
+const receiptLayout=extracted(msg('stripe-layout','Your Example Legal receipt [#1018-8509]','Receipt number 1018-8509\nPayment method: Visa ending 4242\nTotal: $285.00'));
+assert(receiptLayout&&receiptLayout.confidence==='HIGH'&&receiptLayout.amount===285);
+const suffix=extracted(msg('suffix','Your payment receipt','Payment status: Paid\nTotal: 285.00 USD'));
+assert(suffix&&suffix.amount===285&&suffix.confidence==='HIGH');
+const update=msg('update-pay','Your payment receipt','Payment completed.\nTotal paid: $285.00',['CATEGORY_UPDATES']);
+assert.equal(S.parseGmailFull(update),null);
+const upd=S.classifyFullMail(S.parseGmailFull(update,true),true);
+assert(upd&&upd.kind==='PAYMENT'&&upd.evidenceLevel==='UPDATES_FULL');
+assert.equal(extracted(msg('false-total','Limited time offer','Payment method: card. Total: $285.00')),null);
+console.log('Receipt formats and opt-in Updates payment detection passed');

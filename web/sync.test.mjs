@@ -15,6 +15,7 @@ const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  ],body:{data:b64(body),size:body.length}}
 });
 const messages={
+ update:full('update','Your Example Legal receipt [#1018-8509]','Receipt number 1018-8509\nPayment method: Visa ending 4242\nTotal: 42.00 USD',['CATEGORY_UPDATES']),
  receipt:full('receipt','Your purchase receipt','Your card was charged $285.00. Payment completed.'),
  ad:full('ad','Limited time sale $999','Payment completed for promotional example. Save up to $999.00. Shop now. Unsubscribe.',['CATEGORY_PROMOTIONS']),
  otp:full('otp','OTP for your credit card transaction','Your transaction OTP 123123 for an amount of $899.00. Do not share it.'),
@@ -34,6 +35,7 @@ w.fetch=async(url,opts)=>{
  if(u.pathname.endsWith('/profile'))return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})};
  if(u.pathname.endsWith('/messages')){
    assert.equal(u.searchParams.get('labelIds'),null);
+   if(u.searchParams.get('q').includes('category:updates'))return {ok:true,json:async()=>({messages:[{id:'update'}]})};
    assert(u.searchParams.get('q').includes('category:primary'));
    assert(!u.searchParams.get('q').includes('in:anywhere'));
    assert(u.searchParams.get('q').includes('after:'));assert(u.searchParams.get('q').includes('before:'));
@@ -69,5 +71,9 @@ assert.equal(saved.payments.length,1);
 assert.equal(saved.bills.length,1);
 assert(!JSON.stringify(saved).includes('test-scope-token'),'OAuth tokens never persisted');
 assert(!JSON.stringify(saved).includes('Your card was charged $285.00. Payment completed.'),'entire body not persisted');
+d.getElementById('includeUpdates').checked=true;d.getElementById('includeUpdates').dispatchEvent(new w.Event('change',{bubbles:true}));
+d.getElementById('scanMonth').click();
+for(let i=0;i<95;i++){await wait();if(d.getElementById('monthTotal').textContent==='$327.00')break}
+assert.equal(d.getElementById('monthTotal').textContent,'$327.00','opt-in Updates receipt included');
 dom.window.close();
 console.log('Full-format Primary-only scan integration passed; promotion/OTP excluded, bill separated, private snapshot saved.');
