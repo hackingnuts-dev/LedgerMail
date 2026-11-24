@@ -1,4 +1,4 @@
-import { configured, baseUrl, oauthUrl, stateTicket, validState, cookie, parseCookies, readTicket, signTicket, connectedAccount, loadAccount, removeAccount, gmail, syncAccount, workToken } from "./mail-core.mjs";
+import { configured, baseUrl, oauthUrl, stateTicket, validState, cookie, parseCookies, readTicket, signTicket, connectedAccount, loadAccount, removeAccount, gmail, syncAccount, workToken } from "../lib/mail-core.mjs";
 const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...headers}});
 const err=(message,status=400)=>json({error:message},status);
 const go=(url,headers={})=>new Response(null,{status:302,headers:{location:url,"cache-control":"no-store",...headers}});
