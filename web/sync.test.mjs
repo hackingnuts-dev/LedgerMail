@@ -18,7 +18,7 @@ const messages={
  receipt:full('receipt','Your purchase receipt','Your card was charged $285.00. Payment completed.'),
  ad:full('ad','Limited time sale $999','Payment completed for promotional example. Save up to $999.00. Shop now. Unsubscribe.',['CATEGORY_PROMOTIONS']),
  otp:full('otp','OTP for your credit card transaction','Your transaction OTP 123123 for an amount of $899.00. Do not share it.'),
- bill:full('bill','Monthly statement available','Amount due: $160.25\nPayment due date: 12/15/2026'),
+ bill:full('bill','Monthly statement available','Amount due: $160.25\nPayment due date: '+new Date().toLocaleDateString('en-US')+''),
  junk:full('junk','Save $100 today','Use coupon SAVE100 to get $100.00 off your next purchase')
 };
 const dom=new JSDOM(html,{url:'https://ledgermail-finance.netlify.app/',runScripts:'outside-only'});
@@ -36,7 +36,8 @@ w.fetch=async(url,opts)=>{
    assert.equal(u.searchParams.get('labelIds'),null);
    assert(u.searchParams.get('q').includes('category:primary'));
    assert(!u.searchParams.get('q').includes('in:anywhere'));
-   return {ok:true,json:async()=>({messages:Object.keys(messages).map(id=>({id}))})};
+   assert(u.searchParams.get('q').includes('after:'));assert(u.searchParams.get('q').includes('before:'));
+   return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp'].map(id=>({id})),nextPageToken:'page2'})};
  }
  const id=u.pathname.match(/\/messages\/([^/]+)$/)?.[1];
  assert.equal(u.searchParams.get('format'),'full','all financial parsing must inspect full message body');
@@ -56,9 +57,10 @@ const d=w.document;
 assert(d.getElementById('syncStatus').textContent.includes('Primary scan complete'),d.getElementById('syncStatus').textContent);
 assert.equal(d.getElementById('monthTotal').textContent,'$285.00','only clear Primary purchase is counted');
 assert.equal(d.getElementById('paymentCount').textContent,'1');
-assert.equal(d.getElementById('billCount').textContent,'1');
+assert.equal(d.getElementById('billCount').textContent,'1 notices to check');
 assert(!d.getElementById('recent').textContent.includes('$899.00'),'OTP excluded');
 assert(!d.getElementById('recent').textContent.includes('$999.00'),'promotion excluded');
+assert(calls.some(x=>x.includes('pageToken=page2')));
 assert(calls.some(x=>x.includes('format=full')),'Gmail full-format API used');
 assert(calls.every(x=>!x.includes('format=metadata')),'finance scan must not use metadata mode');
 await new Promise(r=>setTimeout(r,140));

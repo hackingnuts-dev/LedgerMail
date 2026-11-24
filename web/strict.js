@@ -6,6 +6,7 @@
 // Primary is selected by Gmail search; some Primary messages have no category label.
 const CATEGORY_EXCLUDED=new Set(['CATEGORY_PROMOTIONS','CATEGORY_SOCIAL','CATEGORY_UPDATES','CATEGORY_FORUMS','SPAM','TRASH','DRAFT','SENT']);
 const PRIMARY_QUERY='category:primary newer_than:90d {receipt "payment" "debited" "charged" "purchase" "order" "statement" "bill" "transaction" "invoice"} -category:promotions -category:social -category:updates -category:forums -in:spam -in:trash';
+function isFinancialUpdate(labels){return Array.isArray(labels)&&labels.includes('CATEGORY_UPDATES')&&!labels.some(x=>x!=='CATEGORY_UPDATES'&&CATEGORY_EXCLUDED.has(x))}
 function isPrimary(labels){
  const set=new Set(Array.isArray(labels)?labels:[]);
  return Array.isArray(labels)&&![...set].some(x=>CATEGORY_EXCLUDED.has(x));
@@ -45,8 +46,8 @@ function mimeBodies(part,collection){
  for(const child of part.parts||[])mimeBodies(child,collection);
  collection.depth--;
 }
-function parseGmailFull(raw){
- if(!raw?.id||!isPrimary(raw.labelIds))return null;
+function parseGmailFull(raw,allowUpdates=false){
+ if(!raw?.id||!(isPrimary(raw.labelIds)||(allowUpdates&&isFinancialUpdate(raw.labelIds))))return null;
  const h=Object.fromEntries((raw.payload?.headers||[]).map(x=>[String(x.name||'').toLowerCase(),String(x.value||'')]));
  const bucket={plain:[],html:[],depth:0};
  mimeBodies(raw.payload,bucket);
@@ -100,8 +101,8 @@ function transactionReference(text){
  const m=String(text).match(/\b(?:transaction (?:id|ref(?:erence)?)|order (?:number|no\.?|#)|receipt (?:number|no\.?|#)|confirmation (?:number|#))\s*[:#-]?\s*([A-Z0-9-]{5,32})\b/i);
  return m?.[1]?.toUpperCase()||null;
 }
-function classifyFullMail(email){
- if(!email||!isPrimary(email.labels)||!email.body)return null;
+function classifyFullMail(email,allowUpdates=false){
+ if(!email||!(isPrimary(email.labels)||(allowUpdates&&isFinancialUpdate(email.labels)))||!email.body)return null;
  const subject=String(email.subject||'').trim(),body=trimQuoted(email.body),lead=body.slice(0,1300);
  const intro=(subject+'\n'+lead);
  if(OTP.test(subject)||OTP.test(lead.slice(0,650)))return null;
@@ -148,7 +149,7 @@ function classifyFullMail(email){
    category:root.LedgerEngine?.category(subject+' '+merchant)||'Other',
    kind,status:'REVIEW',confidence:strong?'HIGH':'REVIEW',
    signal:kind==='BILL'?'BILL_NOTICE':strong?'COMPLETION_EMAIL':'POSSIBLE_RECEIPT',
-   evidenceLevel:'PRIMARY_FULL',analysisVersion:5,
+   evidenceLevel:isFinancialUpdate(email.labels)?'UPDATES_FULL':'PRIMARY_FULL',analysisVersion:5,
    reference:transactionReference(subject+' '+lead),
    dueDate:due?(!Number.isNaN(Date.parse(due))?new Date(due).toISOString().slice(0,10):null):null,
    evidence:strong?(kind==='BILL'?'Bill amount found in full email':'Payment amount tied to completion wording'):'Review required: payment evidence is incomplete',
@@ -188,11 +189,63 @@ function pendingGroups(items,today){
  for(const list of Object.values(groups))list.sort((a,b)=>(a.dueDate||'9999').localeCompare(b.dueDate||'9999')||b.date.localeCompare(a.date));
  return groups;
 }
+function monthBounds(month){
+ if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw Error('Invalid month');
+ const [y,m]=month.split('-').map(Number);
+ return {start:new Date(y,m-1,1),end:new Date(y,m,1)};
+}
+function dateKey(value){const d=new Date(value);return Number.isFinite(d.getTime())?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}
+function monthlyQuery(month,updates=false){
+ const b=monthBounds(month);
+ return (updates?'category:updates':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -category:promotions -category:social -category:forums -in:spam -in:trash'+(updates?' -category:primary':' -category:updates');
+}
+function merchantKey(c){return String(c.merchant||'').toLowerCase().trim()+'|'+c.currency}
+function monthlyModel(payments,bills,month,today){
+ const current=c=>dateKey(c.date).slice(0,7)===month;
+ const clean=c=>c&&!c.possibleDuplicateOf&&!['IGNORED'].includes(c.status);
+ const paid=c=>clean(c)&&c.kind==='PAYMENT'&&c.status!=='DUE'&&(c.status==='PAID'||c.confidence==='HIGH');
+ const made=payments.filter(c=>paid(c)&&current(c)).map(c=>({...c,bucket:'MADE',timelineDate:dateKey(c.date)}));
+ const due=[...bills,...payments.filter(c=>c.status==='DUE')].filter(c=>clean(c)&&c.status!=='PAID'&&(c.dueDate?c.dueDate.slice(0,7)===month:current(c))).map(c=>({...c,bucket:'DUE',timelineDate:c.dueDate||dateKey(c.date)}));
+ const observed=new Set([...made,...due].map(merchantKey));
+ const history=new Map();
+ for(const c of payments.filter(paid)){
+   const day=dateKey(c.date),m=day.slice(0,7);if(m>=month||!m)continue;
+   if(!/subscription|membership|rent|utility|internet|insurance|monthly|autopay|recurring|netflix|spotify/i.test([c.subject,c.merchant,c.category].join(' ')))continue;
+   const key=merchantKey(c);
+   if(!history.has(key))history.set(key,new Map());
+   const group=history.get(key);if(!group.has(m))group.set(m,[]);group.get(m).push(c);
+ }
+ const expected=[];
+ for(const [key,group] of history){
+   if(observed.has(key))continue;
+   const months=[...group.keys()].sort();
+   if(months.length<2)continue;
+   const last=months.at(-1),prev=months.at(-2);
+   const serial=m=>Number(m.slice(0,4))*12+Number(m.slice(5,7));
+   if(serial(last)-serial(prev)!==1||serial(month)-serial(last)!==1)continue;
+   if(group.get(last).length!==1||group.get(prev).length!==1)continue;
+   const x=group.get(last)[0],y=group.get(prev)[0];
+   if(Math.abs(x.amount-y.amount)>Math.max(1,x.amount*.1))continue;
+   const b=monthBounds(month),end=new Date(b.end.getFullYear(),b.end.getMonth(),0).getDate();
+   const date=month+'-'+String(Math.min(end,Number(dateKey(x.date).slice(8)))).padStart(2,'0');
+   if(month<today.slice(0,7))continue;
+   expected.push({...x,key:'forecast:'+key+':'+month,bucket:'EXPECTED',timelineDate:date,amount:x.amount,forecast:true,evidence:'Estimate from two consecutive monthly receipts; not a confirmed bill.'});
+ }
+ const entries=[...made,...due,...expected].sort((a,b)=>a.timelineDate.localeCompare(b.timelineDate)||a.merchant.localeCompare(b.merchant));
+ return {made,due,expected,entries};
+}
+function mergeMonth(old,fresh,month,complete){
+ const prior=new Map(old.map(c=>[c.key,c]));
+ const keep=old.filter(c=>!complete||dateKey(c.date).slice(0,7)!==month);
+ const map=new Map(keep.map(c=>[c.key,c]));
+ for(const c of fresh){const p=prior.get(c.key);map.set(c.key,{...c,status:p?.status||c.status,reviewedAt:p?.reviewedAt||null});}
+ return mergePrimary([], [...map.values()], '',false);
+}
 function visiblePayments(items,month){
  return (items||[]).filter(x=>x.kind==='PAYMENT'&&x.analysisVersion===5&&
    x.confidence==='HIGH'&&String(x.date).slice(0,7)===month&&!['IGNORED','DUE'].includes(x.status)&&!x.possibleDuplicateOf);
 }
-const API={pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
+const API={isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
 if(typeof module!=='undefined'&&module.exports)module.exports=API;
 root.LedgerStrict=API;
 })(typeof window!=='undefined'?window:globalThis);

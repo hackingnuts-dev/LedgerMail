@@ -24,11 +24,11 @@ function snapshot(data){
    return x;
  };
  const messages=(Array.isArray(data.messages)?data.messages:[]).slice(-2500).filter(m=>m&&m.id).map(cleanMessage);
- const payments=(Array.isArray(data.payments)?data.payments:[]).slice(0,2500).filter(c=>c&&c.key).map(cleanCandidate);
- const bills=(Array.isArray(data.bills)?data.bills:[]).slice(0,2500).filter(c=>c&&c.key).map(cleanCandidate);
+ const payments=(Array.isArray(data.payments)?data.payments:[]).filter(c=>c&&c.key).map(cleanCandidate);
+ const bills=(Array.isArray(data.bills)?data.bills:[]).filter(c=>c&&c.key).map(cleanCandidate);
  const legacy=(Array.isArray(data.legacy)?data.legacy:[]).slice(0,500).map(cleanCandidate);
  return {version:5,email,updatedAt:new Date().toISOString(),lastSync:String(data.lastSync||'').slice(0,35),
-    messages,payments,bills,legacy};
+    messages,payments,bills,legacy,selectedMonth:/^\d{4}-(0[1-9]|1[0-2])$/.test(data.selectedMonth||'')?data.selectedMonth:null,includeUpdates:data.includeUpdates===true,coverage:Object.fromEntries(Object.entries(data.coverage||{}).filter(([k,v])=>/^\d{4}-(0[1-9]|1[0-2])$/.test(k)&&v&&typeof v==='object').map(([k,v])=>[k,{complete:v.complete===true,scanned:Number(v.scanned)||0,updatedAt:String(v.updatedAt||'').slice(0,35),includeUpdates:v.includeUpdates===true}]))};
 }
 function db(){
  if(dbPromise)return dbPromise;

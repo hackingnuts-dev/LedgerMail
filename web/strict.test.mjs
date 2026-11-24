@@ -60,3 +60,14 @@ console.log('Strict Primary-only full MIME filtering and transaction evidence re
 
 assert(S.isPrimary(['INBOX']));assert(!S.isPrimary(['INBOX','CATEGORY_UPDATES']));
 const pending=S.pendingGroups([{kind:'BILL',status:'REVIEW',dueDate:'2026-11-01',date:'2026-10-01'},{kind:'BILL',status:'REVIEW',dueDate:'2026-12-01',date:'2026-11-01'},{kind:'BILL',status:'PAID',date:'2026-11-01'},{kind:'BILL',status:'REVIEW',date:'2026-11-01'}],'2026-11-23');assert.equal(pending.overdue.length,1);assert.equal(pending.upcoming.length,1);assert.equal(pending.unknown.length,1);assert.equal(pending.paid.length,1);
+
+const nov='2026-11',nowDay='2026-11-23';
+const mk=(key,day,amount,extra={})=>({key,merchant:'Netflix',currency:'USD',amount,date:day+'T12:00:00',kind:'PAYMENT',status:'REVIEW',confidence:'HIGH',analysisVersion:5,subject:'Monthly subscription',...extra});
+const historical=[mk('sept','2026-09-28',15.99),mk('oct','2026-10-28',15.99)];
+const m1=S.monthlyModel(historical,[mk('bill','2026-11-01',100,{kind:'BILL',merchant:'Internet',dueDate:'2026-11-25'})],nov,nowDay);
+assert.equal(m1.expected.length,1);assert.equal(m1.expected[0].timelineDate,'2026-11-28');assert.equal(m1.due.length,1);assert.equal(m1.made.length,0);
+const m2=S.monthlyModel([...historical,mk('nov','2026-11-10',15.99)],[],nov,nowDay);assert.equal(m2.expected.length,0);assert.equal(m2.made.length,1);
+const m3=S.mergeMonth(historical,[mk('new','2026-11-10',22)],nov,true);assert.equal(m3.length,3);
+assert(S.monthlyQuery(nov).includes('category:primary'));assert(S.monthlyQuery(nov,true).includes('category:updates'));assert(!S.monthlyQuery(nov).includes('newer_than'));
+assert(S.isFinancialUpdate(['INBOX','CATEGORY_UPDATES']));assert(!S.isFinancialUpdate(['CATEGORY_UPDATES','CATEGORY_PROMOTIONS']));
+console.log('Month boundaries, forecast suppression, and month-preserving merge passed');

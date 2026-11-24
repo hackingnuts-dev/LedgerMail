@@ -5,10 +5,11 @@ const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStric
 if(!E||!Store||!Strict)throw new Error('LedgerMail finance dependencies missing. Reload the app.');
 const state={phase:'DISCONNECTED',email:null,token:null,expiresAt:0,controller:null,generation:0,
  messages:[],payments:[],bills:[],pageToken:null,mailQuery:'',
- mailBusy:false,mailPhase:'IDLE',route:'dashboard',backupPhase:'IDLE',syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null,legacy:[],scanStats:null};
+ mailBusy:false,mailPhase:'IDLE',route:'dashboard',backupPhase:'IDLE',syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null,legacy:[],scanStats:null,selectedMonth:null,coverage:{},includeUpdates:false};
 const el=id=>document.getElementById(id);
 const money=(amount,currency='USD')=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency}).format(amount)}catch{return String(amount)+' '+currency}};
-const monthKey=d=>{const date=new Date(d);return isNaN(date)?'unknown':date.toISOString().slice(0,7)};
+const monthKey=d=>Strict.dateKey(d).slice(0,7);
+state.selectedMonth=monthKey(new Date());
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const toast=s=>{const node=el('toast');node.textContent=s;node.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>node.style.display='none',3500)};
 const getClientId=()=>localStorage.getItem('ledgermail.clientId')||'';
@@ -120,11 +121,11 @@ function resetSession({clearView=false}={}){
  state.controller?.abort();state.controller=null;
  state.token=null;state.expiresAt=0;state.pageToken=null;if(state.mailPhase!=='IDLE')setMailPhase('IDLE');state.mailBusy=false;
  if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
- if(clearView){state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;state.email=null}
+ if(clearView){state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.coverage={};state.includeUpdates=false;state.selectedMonth=monthKey(new Date());state.lastSync=null;state.email=null}
  setPhase('DISCONNECTED');render();
 }
 function disconnect(){resetSession();toast('Gmail disconnected. Your saved history remains on this device.')}
-function getAccountRecord(){return {email:state.email,messages:state.messages,payments:state.payments,bills:state.bills,legacy:state.legacy,lastSync:state.lastSync}}
+function getAccountRecord(){return {email:state.email,messages:state.messages,payments:state.payments,bills:state.bills,legacy:state.legacy,lastSync:state.lastSync,coverage:state.coverage,selectedMonth:state.selectedMonth,includeUpdates:state.includeUpdates}}
 async function saveHistory(){
  if(!state.email || state.storagePhase==='ERROR'||state.storagePhase==='BOOTING'||state.storagePhase==='LOADING')return;
  const copy=getAccountRecord();state.persistPending++;
@@ -140,14 +141,14 @@ function applyAccount(record,email){
  state.email=normalized||null;
  const payments=Array.isArray(x?.payments)?x.payments:[];
  const bills=Array.isArray(x?.bills)?x.bills:[];
- const valid=c=>Number(c?.analysisVersion)===5&&c.evidenceLevel==='PRIMARY_FULL';
+ const valid=c=>Number(c?.analysisVersion)===5&&['PRIMARY_FULL','UPDATES_FULL'].includes(c.evidenceLevel);
  state.legacy=[...(x?.legacy||[]),...payments.filter(c=>!valid(c)),...bills.filter(c=>!valid(c))]
    .filter(Boolean).slice(-500);
  state.messages=(Array.isArray(x?.messages)?x.messages:[]).filter(m=>Strict.isPrimary(m.labelIds));
  state.payments=payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
- state.scanStats=null;state.pageToken=null;
+ state.scanStats=null;state.pageToken=null;state.coverage=x?.coverage||{};state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
  render();updateStorageBanner();
 }
 
@@ -188,7 +189,7 @@ function connect(){
      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new Error('Google did not return a valid Gmail address');
      if(email!==previousEmail){
        // Prevent mixing financial records from separate Gmail accounts.
-       state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;render();
+       state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.coverage={};state.lastSync=null;render();
        if(state.storagePhase!=='ERROR')await loadAccount(email,generation);
        else applyAccount(null,email);
      }else state.email=email;
@@ -213,72 +214,71 @@ function parseMessage(raw){const h=headers(raw);return{id:raw.id,threadId:raw.th
 /* Financial candidate creation only occurs from Strict.parseGmailFull + Strict.classifyFullMail. */
 async function syncFinancial(){
  if(state.syncPhase==='RUNNING')return;
- if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to scan new Primary messages');return}
+ if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to scan this month');route('settings');return}
  requireToken();
- setSyncPhase('RUNNING');
- const generation=state.generation,email=state.email;
- const ctrl=new AbortController();
+ const month=state.selectedMonth,includeUpdates=state.includeUpdates;
+ setSyncPhase('RUNNING');render();
+ const generation=state.generation,email=state.email,ctrl=new AbortController();
  state.controller=ctrl;
- let scanned=0,failed=0,skipped=0,unreadable=0,next=null,limitReached=false;
- const accepted=[],summaries=[],startedAt=Date.now();
- el('syncStatus').textContent='Reviewing full emails from Gmail Primary…';
+ let scanned=0,failed=0,skipped=0,unreadable=0;
+ const accepted=[],summaries=[],seen=new Set(),startedAt=Date.now();
+ const valid=()=>generation===state.generation&&state.email===email;
+ const active=()=>valid()&&state.selectedMonth===month&&state.includeUpdates===includeUpdates;
  try{
-   do{
-     // Server-side category filter AND a second per-message label check.
-     let path='messages?maxResults=75&q='+encodeURIComponent(Strict.PRIMARY_QUERY);
-     if(next)path+='&pageToken='+encodeURIComponent(next);
-     const page=await api(path,ctrl.signal);
-     if(generation!==state.generation||state.email!==email)return;
-     const ids=(page.messages||[]).map(m=>m.id).slice(0,Math.max(0,300-scanned));
-     for(let i=0;i<ids.length;i+=6){
-       const result=await Promise.allSettled(ids.slice(i,i+6).map(id=>
-         api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)));
-       if(generation!==state.generation||state.email!==email)return;
-       for(const row of result){
-         scanned++;
-         if(row.status!=='fulfilled'){failed++;continue}
-         if(!Strict.isPrimary(row.value.labelIds)){skipped++;continue}
-         const m=Strict.parseGmailFull(row.value);
-         if(!m){unreadable++;continue}
-         const c=Strict.classifyFullMail(m);
-         if(!c){skipped++;continue}
-         accepted.push(c);
-         summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,
-           snippet:'Financial email analyzed locally',labelIds:m.labels});
+   for(const updates of includeUpdates?[false,true]:[false]){
+     let next=null;const pages=new Set();
+     do{
+       if(!active())return;
+       let path='messages?maxResults=100&q='+encodeURIComponent(Strict.monthlyQuery(month,updates));
+       if(next)path+='&pageToken='+encodeURIComponent(next);
+       const page=await api(path,ctrl.signal);
+       if(!active())return;
+       const ids=(page.messages||[]).map(m=>m.id).filter(id=>!seen.has(id));
+       for(const id of ids)seen.add(id);
+       for(let i=0;i<ids.length;i+=6){
+         const result=await Promise.allSettled(ids.slice(i,i+6).map(id=>api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)));
+         if(!active())return;
+         for(const row of result){
+           scanned++;
+           if(row.status!=='fulfilled'){failed++;continue}
+           const raw=row.value;
+           if(updates?!Strict.isFinancialUpdate(raw.labelIds):!Strict.isPrimary(raw.labelIds)){skipped++;continue}
+           const m=Strict.parseGmailFull(raw,updates);
+           if(!m){unreadable++;continue}
+           if(monthKey(m.date)!==month){skipped++;continue}
+           const c=Strict.classifyFullMail(m,updates);
+           if(!c||(updates&&c.kind!=='BILL')){skipped++;continue}
+           accepted.push(c);summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,snippet:'Financial email analyzed locally',labelIds:m.labels});
+         }
+         el('syncStatus').textContent='Checked '+scanned+' emails for '+month+' · '+accepted.length+' financial matches';
+         el('monthCoverage').textContent=el('syncStatus').textContent;
        }
-       el('syncStatus').textContent='Checked '+scanned+' Primary emails · '+accepted.length+' financial matches';
-     }
-     next=page.nextPageToken||null;
-   }while(next&&scanned<300);
-   if(generation!==state.generation||state.email!==email)return;
-   limitReached=Boolean(next);
-   const complete=failed===0&&!limitReached&&unreadable===0;
-   const cutoff=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
-   state.payments=Strict.mergePrimary(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),cutoff,complete);
-   state.bills=Strict.mergePrimary(state.bills,accepted.filter(c=>c.kind==='BILL'),cutoff,complete);
-   state.messages=[...new Map([...state.messages.filter(m=>Strict.isPrimary(m.labelIds)),...summaries]
-     .map(m=>[m.id,m])).values()].slice(-2500);
-   state.lastSync=new Date().toISOString();
-   state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,limitReached,
-     completed:complete,elapsedMs:Date.now()-startedAt};
-   setSyncPhase(complete?'COMPLETE':'PARTIAL');
-   el('syncStatus').textContent=complete?
-     'Primary scan complete · '+accepted.length+' financial emails found':
-     'Partial scan · '+accepted.length+' financial emails found. Some messages were not checked.';
-   render();
-   await saveHistory();
-   toast(accepted.length+' financial emails found; promotions and junk excluded');
- }catch(err){
-   if(generation!==state.generation)return;
-   if(err.name!=='AbortError'){
-     setSyncPhase('ERROR');el('syncStatus').textContent=err.message;
-     toast('Primary scan failed: '+err.message);
+       next=page.nextPageToken||null;
+       if(next&&pages.has(next))throw Error('Repeated Gmail pagination token');
+       if(next)pages.add(next);
+     }while(next);
    }
+   if(!active())return;
+   const complete=failed===0&&unreadable===0;
+   const retainUpdates=items=>items;
+   state.payments=Strict.mergeMonth(retainUpdates(state.payments),accepted.filter(c=>c.kind==='PAYMENT'),month,complete);
+   const oldUpdateBills=includeUpdates?[]:state.bills.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
+   state.bills=Strict.mergeMonth(retainUpdates(state.bills),accepted.filter(c=>c.kind==='BILL'),month,complete);
+   if(oldUpdateBills.length)state.bills=Strict.mergePrimary(state.bills,oldUpdateBills,'',false);
+   state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
+   state.lastSync=new Date().toISOString();
+   state.coverage={...state.coverage,[month]:{complete,scanned,updatedAt:state.lastSync,includeUpdates}};
+   state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,completed:complete,month,elapsedMs:Date.now()-startedAt};
+   setSyncPhase(complete?'COMPLETE':'PARTIAL');
+   el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+accepted.length+' financial emails found';
+   render();await saveHistory();toast('Month updated: '+accepted.length+' financial emails');
+ }catch(err){
+   if(!valid())return;
+   if(err.name!=='AbortError'){setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
  }finally{
-   if(generation===state.generation){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED'}
+   if(valid()){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED';render()}
  }
 }
-
 async function loadMail(append=false){
  if(state.mailPhase==='LOADING')return;
  if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to search new messages');return}
@@ -392,52 +392,68 @@ function moneyList(items,status){
  }
  return Object.entries(sums).map(([currency,total])=>money(total,currency)).join(' + ')||'$0.00';
 }
+let timelineFilter='ALL';
+function model(){return Strict.monthlyModel(state.payments,state.bills.filter(c=>state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL'),state.selectedMonth,Strict.dateKey(new Date()))}
+function sumItems(items){const totals={};for(const c of items)totals[c.currency]=(totals[c.currency]||0)+c.amount;return Object.entries(totals).map(([cur,n])=>money(n,cur)).join(' + ')||'$0.00'}
+function timeline(node,entries,filter='ALL'){
+ node.replaceChildren();
+ const list=entries.filter(c=>filter==='ALL'||c.bucket===filter);
+ if(!list.length){node.className='empty';node.textContent='No matching records for this month.';return}
+ node.className='month-timeline';
+ const groups=new Map();for(const c of list){if(!groups.has(c.timelineDate))groups.set(c.timelineDate,[]);groups.get(c.timelineDate).push(c)}
+ for(const [date,rows] of groups){
+   const section=document.createElement('section');section.className='timeline-day';
+   const title=document.createElement('div');title.className='timeline-date';
+   const day=document.createElement('strong');day.textContent=date?new Date(date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}):'Date unknown';
+   const sub=document.createElement('small');sub.textContent=[['MADE','Made'],['DUE','Due'],['EXPECTED','Expected']].filter(([k])=>rows.some(c=>c.bucket===k)).map(([k,label])=>label+' '+sumItems(rows.filter(c=>c.bucket===k))).join(' · ');title.append(day,sub);section.append(title);
+   for(const c of rows){
+     const card=document.createElement('details');card.className='timeline-record clean-row';card.dataset.bucket=c.bucket;
+     const head=document.createElement('summary');const left=document.createElement('span');left.className='clean-main';
+     const merchant=document.createElement('strong');merchant.textContent=c.merchant;const tag=document.createElement('small');
+     tag.textContent=c.bucket==='MADE'?'Made · email evidence':c.bucket==='DUE'?(c.dueDate?(c.dueDate<Strict.dateKey(new Date())?'Past due date · verify':'Due · check status'):'Bill · date unknown'):'Expected · estimate';
+     left.append(merchant,tag);const amt=document.createElement('strong');amt.className='clean-amount';amt.textContent=money(c.amount,c.currency);head.append(left,amt);card.append(head);
+     const body=document.createElement('div');body.className='expanded-details';
+     const evidence=document.createElement('p');evidence.textContent=c.forecast?c.evidence:(c.subject||'')+' · '+(c.reviewSuggestion||c.evidence||'Check original email');
+     body.append(evidence);
+     if(c.forecast){const p=document.createElement('p');p.textContent='Based on previous monthly receipts. Not an invoice or a confirmed obligation.';body.append(p)}
+     else {const original=[...state.payments,...state.bills].find(x=>x.key===c.key);if(original)body.append(itemCard(original))}
+     card.append(body);section.append(card);
+   }node.append(section);
+ }
+}
 function render(){
- const today=new Date(),current=monthKey(today);
- const eligible=state.payments.filter(c=>paymentEligible(c)&&monthKey(c.date)===current);
- const totals={};
- for(const c of eligible)totals[c.currency]=(totals[c.currency]||0)+c.amount;
- const formatted=Object.entries(totals).map(([cur,sum])=>money(sum,cur)).join(' + ')||'$0.00';
- el('monthTotal').textContent=formatted;
- el('paidHint').textContent='Based on '+eligible.length+' clear receipt'+(eligible.length===1?'':'s')+' · not bank verified';
- el('monthLabel').textContent=today.toLocaleDateString('en-US',{month:'long',year:'numeric'})+' · Primary only';
- el('paymentCount').textContent=state.payments.filter(paymentEligible).length;
- el('billCount').textContent=[...state.bills,...state.payments.filter(c=>c.status==='DUE')].filter(c=>!['PAID','IGNORED'].includes(c.status)&&!c.possibleDuplicateOf).length;
- const uncertain=state.payments.filter(c=>E.normalizeStatus(c.status)==='REVIEW'&&
-   (c.confidence!=='HIGH'||c.possibleDuplicateOf));
- const nudge=el('reviewNudge');
- nudge.hidden=uncertain.length===0;
- el('reviewNudgeCount').textContent=String(uncertain.length);
- const recent=el('recent');recent.replaceChildren();
- const latest=state.payments.filter(paymentEligible).slice(0,3);
- if(!latest.length){
-   recent.className='empty';
-   recent.textContent=state.email?'No clear purchase transactions found yet. This is better than counting ads or guesses.':'Connect Gmail to scan Primary for transaction receipts.';
- }else{recent.className='';latest.forEach(c=>recent.append(compactRow(c)))}
- const select=el('monthSelect'),previous=select.value;
- const months=[...new Set(state.payments.map(x=>monthKey(x.date)))].sort().reverse();
- select.replaceChildren(new Option('All months','all'));
- months.forEach(m=>select.add(new Option(m,m)));select.value=months.includes(previous)?previous:'all';
+ const m=model(),current=state.selectedMonth;
+ el('dashboardMonth').value=current;el('dashboardMonth').max=monthKey(new Date());
+ el('dashboardMonth').disabled=state.syncPhase==='RUNNING';el('includeUpdates').checked=state.includeUpdates;el('includeUpdates').disabled=state.syncPhase==='RUNNING';
+ el('scanMonth').disabled=state.syncPhase==='RUNNING';
+ el('monthTotal').textContent=sumItems(m.made);el('dueTotal').textContent=sumItems(m.due);el('expectedTotal').textContent=sumItems(m.expected);
+ el('paidHint').textContent=m.made.length+' payment receipts · not bank verified';
+ el('monthLabel').textContent=new Date(current+'-01T12:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'});
+ el('paymentCount').textContent=String(m.made.length);el('billCount').textContent=m.due.length+' notices to check';el('expectedCount').textContent=m.expected.length+' estimates';
+ const coverage=state.coverage[current];
+ if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' emails checked · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + bill Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
+ const uncertain=state.payments.filter(c=>monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf));
+ el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
+ timeline(el('recent'),m.entries,timelineFilter);
+ const select=el('monthSelect');select.replaceChildren(new Option(el('monthLabel').textContent,current));select.value=current;
  renderPayments();renderBills();
- const pending=[...state.bills,...state.payments.filter(c=>c.status==='DUE')].filter(c=>!['PAID','IGNORED'].includes(c.status)&&!c.possibleDuplicateOf);
- const sums={};for(const c of pending)sums[c.currency]=(sums[c.currency]||0)+c.amount;
- el('dueSummary').textContent=pending.length?pending.length+' pending / to check · '+Object.entries(sums).map(([cur,n])=>money(n,cur)).join(' + ')+' (not verified outstanding)':'No pending payment notices found.';
+ el('dueSummary').textContent=m.due.length?sumItems(m.due)+' · '+m.due.length+' notices (verify unpaid status)':'No pending notices for this month.';
  const notice=el('legacyNotice');
  notice.hidden=!state.legacy.length;
  if(state.legacy.length)notice.textContent=state.legacy.length+' old subject-only matches are hidden for accuracy. Reconnect and scan Primary again.';
  const info=el('scanDetails');
  if(state.scanStats){
    const st=state.scanStats;
-   info.textContent='Full email analysis · '+st.scanned+' Primary emails checked · '+st.skipped+' unrelated excluded'+
+   info.textContent='Full email analysis · '+st.scanned+' emails checked · '+st.skipped+' unrelated excluded'+
      (st.failed||st.unreadable?' · '+(st.failed+st.unreadable)+' not fully read':'')+
-     (st.limitReached?' · 300-message limit reached':'');
+     '';
  }else info.textContent=state.lastSync?'Last scan saved; only Primary full-email matches are shown.':'Primary-only · full email text analyzed locally · no attachments';
  updateStorageBanner();
 }
 function renderBills(){
  const selected=el('billStatusFilter')?.value||'pending';
  const node=el('billList');node.replaceChildren();
- const items=[...state.bills,...state.payments.filter(c=>c.status==='DUE')];
+ const items=[...state.bills.filter(c=>state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL'),...state.payments.filter(c=>c.status==='DUE')].filter(c=>(c.dueDate?c.dueDate.slice(0,7):monthKey(c.date))===state.selectedMonth);
  if(selected==='pending'){
    const now=new Date();const today=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
    const groups=Strict.pendingGroups(items,today);
@@ -463,64 +479,38 @@ function renderPayments(){
  if(!list.length){
    node.className='empty';node.textContent=status==='clear'?'No clear payment receipts in this view. Uncertain emails are kept separately.':
      status==='needs-attention'?'Nothing uncertain needs your attention.':'No transactions match this selection.';
- }else{node.className='';list.forEach(c=>node.append(itemCard(c)))}
+ }else{node.className='';let last='';for(const c of list){const day=Strict.dateKey(c.date);if(day!==last){const heading=document.createElement('h3');heading.className='pending-heading';heading.textContent=day;node.append(heading);last=day}node.append(itemCard(c))}}
 }
 
-function openBreakdown(){
- const month=monthKey(new Date()),eligible=state.payments.filter(c=>paymentEligible(c)&&monthKey(c.date)===month),S=E.summary(eligible,month);
- el('breakdownTitle').textContent='Spending breakdown · '+month;
- el('breakdownCaption').textContent='Only strong Primary email receipts and items you marked paid. Bills, ads and uncertain matches are excluded. Emails do not prove bank settlement.';
+function openBreakdown(filter='ALL'){
+ const m=model();el('breakdownTitle').textContent='Monthly breakdown · '+el('monthLabel').textContent;
+ el('breakdownCaption').textContent='Made is email evidence; due is a notice to check; expected is an estimate, not a confirmed bill.';
  const metrics=el('breakdownMetrics');metrics.replaceChildren();
- for(const [currency,g] of Object.entries(S.groups)){
-   for(const [label,key] of [['Likely completed','detected'],['You confirmed paid','paid']]){
-     const tile=document.createElement('div');tile.className='breakdown-tile';
-     const a=document.createElement('span');a.textContent=currency+' · '+label;
-     const b=document.createElement('strong');b.textContent=money(g[key],currency);
-     tile.append(a,b);metrics.append(tile);
-   }
- }
- if(!S.items.length){metrics.textContent='No payment candidates this month'}
- const totals=new Map();
- for(const c of S.items){
-   const key=c.category+'|'+c.currency;
-   totals.set(key,(totals.get(key)||0)+c.amount);
+ for(const [name,list] of [['Made',m.made],['Due',m.due],['Expected',m.expected]]){
+  const tile=document.createElement('div');tile.className='breakdown-tile';const label=document.createElement('span');label.textContent=name;const value=document.createElement('strong');value.textContent=sumItems(list);tile.append(label,value);metrics.append(tile);
  }
  const cats=el('breakdownCategories');cats.replaceChildren();
- const max=Math.max(1,...totals.values());
- for(const [key,value] of [...totals].sort((a,b)=>b[1]-a[1])){
-   const [category,currency]=key.split('|');
-   const row=document.createElement('div');row.className='breakdown-category';
-   const head=document.createElement('div');head.className='category-label';
-   const left=document.createElement('span');left.textContent=category;
-   const right=document.createElement('strong');right.textContent=money(value,currency);
-   head.append(left,right);
-   const bar=document.createElement('div');bar.className='breakdown-bar';
-   const fill=document.createElement('div');fill.style.width=Math.max(3,value/max*100).toFixed(1)+'%';bar.append(fill);
-   row.append(head,bar);cats.append(row);
- }
- if(!totals.size)cats.textContent='No categories available yet';
- const items=el('breakdownItems');items.replaceChildren();
- for(const c of S.items){
-   const row=document.createElement('div');row.className='breakdown-item';
-   const left=document.createElement('div');const title=document.createElement('strong');
-   title.textContent=c.merchant;const sub=document.createElement('small');sub.textContent=String(c.date).slice(0,10)+' · '+statusLabel(c.status);
-   left.append(title,sub);const amt=document.createElement('strong');amt.textContent=money(c.amount,c.currency);
-   row.append(left,amt);items.append(row);
- }
- if(!S.items.length)items.textContent='No included transactions';
- el('breakdownFooter').textContent=S.possibleDuplicateCount?
-   S.possibleDuplicateCount+' potentially duplicate emails excluded until you explicitly confirm them.': 
-   'Review items in Payments to change the totals. All financial estimates are local to the selected account.';
- el('breakdownDialog').showModal();
+ const totals=new Map();for(const c of m.made){const key=c.category+'|'+c.currency;totals.set(key,(totals.get(key)||0)+c.amount)}
+ for(const [key,n] of [...totals].sort((a,b)=>b[1]-a[1])){const row=document.createElement('div');row.className='breakdown-item';const label=document.createElement('span');const [cat,cur]=key.split('|');label.textContent=cat;const value=document.createElement('strong');value.textContent=money(n,cur);row.append(label,value);cats.append(row)}
+ if(!totals.size)cats.textContent='No completed payment categories yet.';
+ timeline(el('breakdownItems'),m.entries,typeof filter==='string'?filter:'ALL');
+ el('breakdownFooter').textContent='Datewise amounts are grouped by receipt date, bill due date or estimated recurring date. Check source emails before relying on totals.';
+ if(!el('breakdownDialog').open)el('breakdownDialog').showModal();
 }
-
+el('dashboardMonth').onchange=()=>{if(state.syncPhase==='RUNNING')return;const month=el('dashboardMonth').value;try{Strict.monthBounds(month)}catch{return}state.selectedMonth=month;timelineFilter='ALL';render();saveHistory()};
+el('includeUpdates').onchange=()=>{if(state.syncPhase==='RUNNING')return;state.includeUpdates=el('includeUpdates').checked;render();saveHistory()};
+el('scanMonth').onclick=syncFinancial;
+el('dueTile').onclick=()=>openBreakdown('DUE');
+el('expectedTile').onclick=()=>openBreakdown('EXPECTED');
+el('timelineAll').onclick=()=>openBreakdown('ALL');
+document.querySelectorAll('[data-timeline]').forEach(b=>b.onclick=()=>{timelineFilter=b.dataset.timeline;document.querySelectorAll('[data-timeline]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));timeline(el('recent'),model().entries,timelineFilter)});
 el('reviewNudge').onclick=()=>{el('paymentStatusFilter').value='needs-attention';route('payments')};
 el('paymentSearch').oninput=renderPayments;
 el('monthSelect').onchange=renderPayments;
 el('paymentStatusFilter').onchange=renderPayments;
 el('billStatusFilter').onchange=renderBills;
-el('spendingHero').onclick=openBreakdown;
-el('spendingHero').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openBreakdown()}};
+el('spendingHero').onclick=()=>openBreakdown('MADE');
+el('spendingHero').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openBreakdown('MADE')}};
 el('closeBreakdown').onclick=()=>el('breakdownDialog').close();
 el('saveClient').onclick=()=>{
  const v=el('clientId').value.trim();
@@ -537,7 +527,7 @@ el('clear').onclick=async()=>{
  if(state.mailPhase!=='IDLE')setMailPhase('IDLE');
  try{
    await Store.remove(account);
-   state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;
+   state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.coverage={};state.lastSync=null;
    render();toast('Saved history deleted for '+account);
  }catch(err){toast('Cannot delete saved history: '+err.message)}
 };
