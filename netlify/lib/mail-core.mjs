@@ -41,12 +41,22 @@ export async function connectedAccount(code) {
  const account={id,email:profile.email.toLowerCase(),refresh:token.refresh_token,expires:0,access:"",historyId:prior?.historyId||null,baselineId:prior?.baselineId||null,backfillCursor:prior?.backfillCursor||null,backfillDone:prior?.backfillDone||false,messages:prior?.messages||[],nextSeq:prior?.nextSeq||0,lastSync:prior?.lastSync||null,lastError:null};
  await saveAccount(account); return account;
 }
+const accessCache=new Map();
 export async function accessToken(account) {
- if(account.access && account.expires > Date.now()+60000)return account.access;
- const tok=await tokenExchange({refresh_token:account.refresh,client_id:process.env.GOOGLE_CLIENT_ID,client_secret:process.env.GOOGLE_CLIENT_SECRET,grant_type:"refresh_token"});
- account.access=tok.access_token;account.expires=Date.now()+(Number(tok.expires_in)||3600)*1000;
- if(tok.refresh_token)account.refresh=tok.refresh_token;
- return account.access;
+ const entry=accessCache.get(account.id);
+ if(entry?.token&&entry.exp>Date.now()+60000)return entry.token;
+ if(entry?.pending)return entry.pending;
+ if(account.access&&account.expires>Date.now()+60000)return account.access;
+ const pending=tokenExchange({refresh_token:account.refresh,client_id:process.env.GOOGLE_CLIENT_ID,client_secret:process.env.GOOGLE_CLIENT_SECRET,grant_type:"refresh_token"})
+  .then(tok=>{
+   const exp=Date.now()+(Number(tok.expires_in)||3600)*1000;
+   accessCache.set(account.id,{token:tok.access_token,exp});
+   account.access=tok.access_token;account.expires=exp;
+   if(tok.refresh_token)account.refresh=tok.refresh_token;
+   return tok.access_token;
+  }).catch(error=>{accessCache.delete(account.id);throw error});
+ accessCache.set(account.id,{pending});
+ return pending;
 }
 export async function gmail(account,path) {
  const token=await accessToken(account);
