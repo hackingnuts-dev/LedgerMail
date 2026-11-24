@@ -195,10 +195,11 @@ function connect(){
      }else state.email=email;
      if(generation!==state.generation)return;
      setPhase('CONNECTED');toast('Connected to '+email);
-     syncFinancial().catch(err=>toast(err.message));
+     const coverage=state.coverage[state.selectedMonth];
+     if(!coverage?.complete||coverage.includeUpdates!==state.includeUpdates)syncFinancial().catch(err=>toast(err.message));
    }catch(err){
      if(generation!==state.generation)return;
-     state.token=null;setPhase('ERROR');toast('Gmail connection failed: '+err.message);
+     state.token=null;setPhase('ERROR');if(err.code==='GMAIL_RATE_LIMIT')el('authStatus').textContent='Google temporarily rate-limited Gmail verification. Saved history remains; reconnect after cooldown.';toast('Gmail connection: '+err.message);
    }
  },
  error_callback:e=>{if(generation!==state.generation)return;setPhase('ERROR');toast(e.type||'Google sign-in failed')}
@@ -208,7 +209,55 @@ function connect(){
 }
 
 function requireToken(){if(!state.token||Date.now()>=state.expiresAt){state.token=null;setPhase('EXPIRED');throw new Error('Google session expired. Connect again.')}return state.token}
-async function api(path,signal){const token=requireToken();const res=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/'+path,{headers:{Authorization:'Bearer '+token},signal});if(res.status===401){state.token=null;setPhase('EXPIRED');throw new Error('Gmail authorization expired. Reconnect.')};if(!res.ok){let detail='';try{detail=(await res.json()).error?.message||''}catch{}throw new Error('Gmail request failed ('+res.status+'): '+detail)}return res.json()}
+// Shared, conservative request pacing; retries never switch accounts or reuse a stale token.
+let gmailTail=Promise.resolve(),gmailNext=0,gmailCooldown=0,gmailBlockedGeneration=-1;
+const abortError=()=>new DOMException('Gmail request cancelled','AbortError');
+function gmailWait(ms,signal){
+ if(signal?.aborted)return Promise.reject(abortError());
+ return new Promise((resolve,reject)=>{
+   const done=()=>{signal?.removeEventListener('abort',cancel);resolve()};
+   const timer=setTimeout(done,Math.max(0,ms));
+   function cancel(){clearTimeout(timer);signal?.removeEventListener('abort',cancel);reject(abortError())}
+   signal?.addEventListener('abort',cancel,{once:true});
+ });
+}
+function quotaDelay(res,attempt,now=Date.now()){
+ const retry=res.headers?.get?.('Retry-After');const seconds=retry==null?NaN:Number(retry);
+ const wait=Number.isFinite(seconds)?seconds*1000:retry?Date.parse(retry)-now:0;
+ return Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)));
+}
+async function api(path,signal){
+ const generation=state.generation,token=requireToken();
+ const check=()=>{if(signal?.aborted||generation!==state.generation||state.token!==token)throw abortError();requireToken()};
+ const task=async()=>{
+   for(let attempt=0;attempt<3;attempt++){
+     check();
+     if(gmailBlockedGeneration===generation&&Date.now()<gmailCooldown){const error=Error('Gmail cooldown active. Saved history is retained.');error.code='GMAIL_RATE_LIMIT';throw error;}
+     await gmailWait(Math.max(0,gmailNext-Date.now(),gmailCooldown-Date.now()),signal);check();
+     // At most about 200 requests/minute per tab (roughly 1,000 quota units for message reads).
+     gmailNext=Date.now()+300;
+     const res=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/'+path,{headers:{Authorization:'Bearer '+token},signal});
+     check();
+     if(res.ok)return res.json();
+     let detail='',reasons='';
+     try{const err=(await res.json()).error||{};detail=err.message||'';reasons=JSON.stringify(err.errors||err.details||[])}catch{}
+     if(res.status===401){state.token=null;setPhase('EXPIRED');throw Error('Gmail authorization expired. Reconnect.')}
+     const limited=res.status===429||(res.status===403&&/quota|rate.?limit|resource.exhausted|too many requests/i.test(detail+' '+reasons));
+     if(limited){
+       const delay=quotaDelay(res,attempt);gmailCooldown=Math.max(gmailCooldown,Date.now()+delay);
+       const notice='Gmail rate limit reached. Automatically retrying after cooldown; saved history is safe.';
+       if(state.phase==='VERIFYING')el('authStatus').textContent=notice;
+       if(state.syncPhase==='RUNNING'){el('syncStatus').textContent=notice;el('monthCoverage').textContent=notice}
+       if(attempt<2)continue;
+       gmailBlockedGeneration=generation;
+       const error=Error('Gmail rate limit persists. Saved history is retained. Retry after the cooldown.');error.code='GMAIL_RATE_LIMIT';throw error;
+     }
+     throw Error('Gmail request failed ('+res.status+'): '+detail);
+   }
+ };
+ const queued=gmailTail.then(task,task);gmailTail=queued.catch(()=>{});return queued;
+}
+
 const headers=m=>Object.fromEntries((m.payload?.headers||[]).map(h=>[h.name.toLowerCase(),h.value]));
 function parseMessage(raw){const h=headers(raw);return{id:raw.id,threadId:raw.threadId,subject:h.subject||'(no subject)',sender:h.from||'Unknown sender',date:new Date(Number(raw.internalDate)||Date.now()).toISOString(),snippet:raw.snippet||'',labelIds:raw.labelIds||[]}}
 /* Financial candidate creation only occurs from Strict.parseGmailFull + Strict.classifyFullMail. */
@@ -240,7 +289,7 @@ async function syncFinancial(){
          if(!active())return;
          for(const row of result){
            scanned++;
-           if(row.status!=='fulfilled'){failed++;note('Gmail fetch error');continue}
+           if(row.status!=='fulfilled'){failed++;note(row.reason?.code==='GMAIL_RATE_LIMIT'?'Gmail rate limit':'Gmail fetch error');if(row.reason?.code==='GMAIL_RATE_LIMIT')throw row.reason;continue}
            const raw=row.value;
            if(!(Strict.isPrimary(raw.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(raw.labelIds)))){skipped++;note('Excluded category');continue}
            if(seen.has(raw.id))continue;seen.add(raw.id);
@@ -289,7 +338,7 @@ async function syncFinancial(){
    render();await saveHistory();toast('Month updated: '+accepted.length+' financial emails');
  }catch(err){
    if(!valid())return;
-   if(err.name!=='AbortError'){setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
+   if(err.name!=='AbortError'){if(err.code==='GMAIL_RATE_LIMIT'&&active()){state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);state.coverage={...state.coverage,[month]:{build:11,complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};setSyncPhase('PARTIAL');render();await saveHistory();toast(err.message);return}setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
  }finally{
    if(valid()){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED';render()}
  }

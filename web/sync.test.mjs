@@ -4,7 +4,7 @@ import {JSDOM} from 'jsdom';
 import {indexedDB} from 'fake-indexeddb';
 
 const html=fs.readFileSync('web/index.html','utf8');
-const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8'));
+const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8')).map(code=>code.replace('gmailNext=Date.now()+300','gmailNext=Date.now()+1').replace('Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)))','Math.max(10,Number.isFinite(wait)?wait:0)'));
 const b64=s=>Buffer.from(s,'utf8').toString('base64url');
 const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  id,threadId:id,labelIds:labels,internalDate:String(Date.now()),
@@ -30,10 +30,10 @@ w.indexedDB=indexedDB;w.scrollTo=()=>{};w.confirm=()=>true;
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 w.HTMLDialogElement.prototype.close=function(){this.open=false};
 w.localStorage.setItem('ledgermail.clientId','123456-example.apps.googleusercontent.com');
-const calls=[];
+const calls=[];let profileAttempts=0;
 w.fetch=async(url,opts)=>{
  const u=new URL(url);calls.push(u.toString());
- if(u.pathname.endsWith('/profile'))return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})};
+ if(u.pathname.endsWith('/profile')){profileAttempts++;if(profileAttempts===1)return {ok:false,status:403,headers:{get:()=>null},json:async()=>({error:{message:'Quota exceeded for Units per minute per user'}})};return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})}}
  if(u.pathname.endsWith('/messages')){
    assert.equal(u.searchParams.get('labelIds'),null);
    const combined=u.searchParams.get('q').includes('category:updates');
@@ -57,6 +57,7 @@ for(let i=0;i<20;i++){await wait();if(w.document.getElementById('localSaveStatus
 w.document.getElementById('connect').click();
 for(let i=0;i<95;i++){await wait();const t=w.document.getElementById('syncStatus').textContent;if(t.includes('Primary scan complete')||t.includes('Partial scan'))break}
 const d=w.document;
+assert.equal(profileAttempts,2,'quota-limited profile retried without login failure');
 assert(d.getElementById('syncStatus').textContent.includes('Primary scan complete'),d.getElementById('syncStatus').textContent);
 assert(d.getElementById('monthTotal').textContent.includes('$285.00'),'clear Primary USD purchase counted');
 assert(d.getElementById('monthTotal').textContent.includes('1,500'),'localized amount recovered');
