@@ -736,12 +736,12 @@ async function pullBackgroundMail(){
  backgroundBusy=true;const email=state.email,g=state.generation,key='ledgermail.bgCursor.'+email;
  try{
   const cursor=localStorage.getItem(key)||'';
-  const r=await fetch(MAIL_BACKEND+'?action=changes&limit=150'+(cursor?'&since='+encodeURIComponent(cursor):''),{credentials:'same-origin',cache:'no-store'});
+  const r=await fetch(MAIL_BACKEND+'?action=changes&limit=25'+(cursor?'&since='+encodeURIComponent(cursor):''),{credentials:'same-origin',cache:'no-store'});
   if(!r.ok)throw Error('Background results temporarily unavailable');
   const data=await r.json();if(email!==state.email||g!==state.generation)return;
-  const payments=[],bills=[],summaries=[];let maxDate=Number(cursor)||0;
+  const payments=[],bills=[],summaries=[];let maxSeq=Number(cursor)||0;
   for(const raw of data.messages||[]){
-   maxDate=Math.max(maxDate,Number(raw.internalDate)||0);
+   maxSeq=Math.max(maxSeq,Number(raw._lmSeq)||0);
    if(!(Strict.isPrimary(raw.labelIds)||(state.includeUpdates&&Strict.isFinancialUpdate(raw.labelIds))))continue;
    const m=Strict.parseGmailFull(raw,state.includeUpdates);if(!m)continue;
    const inspected=Strict.inspectEvidence(m,state.includeUpdates);
@@ -754,7 +754,8 @@ async function pullBackgroundMail(){
   state.bills=Strict.mergePrimary(state.bills,bills,'',false);
   state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
   if(summaries.length){state.lastSync=new Date().toISOString();await saveHistory();render()}
-  if(maxDate>Number(cursor))localStorage.setItem(key,String(maxDate));
+  if(state.storagePhase!=='ERROR'&&maxSeq>Number(cursor))localStorage.setItem(key,String(maxSeq));
+  if(data.hasMore)setTimeout(()=>pullBackgroundMail(),1500);
   el('syncStatus').textContent=data.lastError?'Background sync issue: '+data.lastError:'Background sync active'+(data.lastSync?' · last checked '+new Date(data.lastSync).toLocaleString():'');
  }catch(e){el('syncStatus').textContent='Automatic sync retries: '+e.message}
  finally{backgroundBusy=false}
