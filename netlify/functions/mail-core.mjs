@@ -36,7 +36,7 @@ export async function connectedAccount(code) {
  const profile=await who.json();
  if(!profile.email_verified || !profile.email)throw Error("Google email identity could not be verified");
  const id=idFor(profile.email), prior=await loadAccount(id);
- const account={id,email:profile.email.toLowerCase(),refresh:token.refresh_token,expires:0,access:"",historyId:prior?.historyId||null,baselineId:prior?.baselineId||null,backfillCursor:prior?.backfillCursor||null,backfillDone:prior?.backfillDone||false,messages:prior?.messages||[],lastSync:prior?.lastSync||null,lastError:null};
+ const account={id,email:profile.email.toLowerCase(),refresh:token.refresh_token,expires:0,access:"",historyId:prior?.historyId||null,baselineId:prior?.baselineId||null,backfillCursor:prior?.backfillCursor||null,backfillDone:prior?.backfillDone||false,messages:prior?.messages||[],nextSeq:prior?.nextSeq||0,lastSync:prior?.lastSync||null,lastError:null};
  await saveAccount(account); return account;
 }
 export async function accessToken(account) {
@@ -63,7 +63,7 @@ const addMessages=async(account,ids) => {
  // Bounded concurrent Gmail reads; long-running work is resumed by the next schedule.
  for(let i=0;i<pending.length;i+=4){
   const rows=await Promise.all(pending.slice(i,i+4).map(id=>gmail(account,"messages/"+encodeURIComponent(id)+"?format=full")));
-  for(const m of rows){if(!old.has(m.id)){account.messages.push(m);old.add(m.id)}}
+  for(const m of rows){if(!old.has(m.id)){m._lmSeq=++account.nextSeq;account.messages.push(m);old.add(m.id)}}
  }
  account.messages=account.messages.slice(-500);
 };
