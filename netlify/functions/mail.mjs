@@ -1,4 +1,4 @@
-import { configured, baseUrl, oauthUrl, stateTicket, validState, cookie, parseCookies, readTicket, signTicket, connectedAccount, loadAccount, removeAccount, gmail, syncAccount } from "./mail-core.mjs";
+import { configured, baseUrl, oauthUrl, stateTicket, validState, cookie, parseCookies, readTicket, signTicket, connectedAccount, loadAccount, removeAccount, gmail, syncAccount, workToken } from "./mail-core.mjs";
 const json=(data,status=200,headers={})=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json; charset=utf-8","cache-control":"no-store",...headers}});
 const err=(message,status=400)=>json({error:message},status);
 const go=(url,headers={})=>new Response(null,{status:302,headers:{location:url,"cache-control":"no-store",...headers}});
@@ -16,6 +16,11 @@ export default async function handler(request){
    if(!validState(state)||state!==cookies.lm_oauth)return err("Invalid or expired Google authorization attempt",403);
    if(!u.searchParams.get("code"))return err("Google authorization was cancelled",400);
    const account=await connectedAccount(u.searchParams.get("code"));
+   try{
+    const backgroundUrl=baseUrl()+"/.netlify/functions/mail-scan-background";
+    const queued=await fetch(backgroundUrl,{method:"POST",headers:{"content-type":"application/json","x-ledgermail-work":workToken(account.id)},body:JSON.stringify({id:account.id})});
+    if(queued.status!==202)console.warn("Initial Gmail backfill queue returned",queued.status);
+   }catch(e){console.warn("Initial Gmail background job could not be queued; scheduled sync will retry");}
    return go(baseUrl()+"/?gmail=connected",{"set-cookie":cookie("lm_session",signTicket(account.id),90*86400)});
   }
   const id=readTicket(cookies.lm_session);
