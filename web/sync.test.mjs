@@ -4,7 +4,7 @@ import {JSDOM} from 'jsdom';
 import {indexedDB} from 'fake-indexeddb';
 
 const html=fs.readFileSync('web/index.html','utf8');
-const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8')).map(code=>code.replace('gmailNext=Date.now()+1500','gmailNext=Date.now()+1').replace('Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)))','Math.max(10,Number.isFinite(wait)?wait:0)'));
+const scripts=['strict.js','engine.js','store.js','quota.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8')).map(code=>code.replace('gmailNext=Date.now()+2100','gmailNext=Date.now()+1').replace('Math.max(65000,Number.isFinite(wait)?wait:0,Math.min(120000,65000*Math.pow(1.3,attempt)))','Math.max(10,Number.isFinite(wait)?wait:0)'));
 const b64=s=>Buffer.from(s,'utf8').toString('base64url');
 const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  id,threadId:id,labelIds:labels,internalDate:String(Date.now()),

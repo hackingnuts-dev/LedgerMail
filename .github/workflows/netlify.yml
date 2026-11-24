@@ -31,6 +31,8 @@ jobs:
           node --check web/store.js
           node web/engine.test.mjs
           node web/store.test.mjs
+          node --check web/quota.js
+          node web/quota.test.mjs
           node --check web/app.js
           node --check web/sw.js
           node web/tests.mjs

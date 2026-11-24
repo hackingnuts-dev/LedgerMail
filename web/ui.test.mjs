@@ -4,7 +4,7 @@ import {JSDOM} from 'jsdom';
 import {indexedDB} from 'fake-indexeddb';
 
 const html=fs.readFileSync('web/index.html','utf8');
-const code=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8'));
+const code=['strict.js','engine.js','store.js','quota.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8'));
 const wait=()=>new Promise(r=>setTimeout(r,65));
 function openApp(){
  const dom=new JSDOM(html,{url:'https://ledgermail-finance.netlify.app/',runScripts:'outside-only'});
