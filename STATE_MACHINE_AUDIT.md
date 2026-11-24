@@ -27,3 +27,13 @@ This audit describes finite-state boundaries implemented in the browser. It does
 - Netlify's current Actions publishing credential can expire and require renewal or a permanent Git-based deployment configuration.
 
 These controls reduce hidden state/race risks, but do not guarantee that the app has zero defects.
+
+## v5 Primary full-message financial ingestion
+- Gmail API list requests always include CATEGORY_PRIMARY and a Primary-only query excluding Promotions, Social, Updates and Forums. Each full message must also carry CATEGORY_PRIMARY and no excluded category.
+- Only Gmail format=full MIME bodies are parsed for financial classification. Non-text attachments are ignored and subject-only/preview-only matches never count.
+- Classifier is conservative, rejecting OTPs, advertisement/promotional wording, refunds, inbound deposits, and ambiguous amounts without payment context.
+- Strict receipts populate the compact financial dashboard; less certain classifications remain behind a user-initiated review queue; bills never count as purchases.
+- v4 metadata-only matches are quarantined in local legacy history, excluded from all amounts until a fresh Primary full-body scan. No automatic approval of historic transactions.
+- Full email text is temporary and never stored as a full message; an evidence excerpt is stored with explicit provenance and classifier version.
+- Classification errors and unscanned messages are reflected as incomplete/partial status, never as a guaranteed exhaustive statement.
+- Outstanding limitation: Gmail classification is not proof of sender authenticity, card ownership or final bank settlement.

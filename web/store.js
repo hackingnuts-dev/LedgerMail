@@ -11,13 +11,14 @@ function snapshot(data){
  const cleanMessage=m=>({
    id:String(m.id||'').slice(0,150),threadId:String(m.threadId||'').slice(0,150),
    subject:String(m.subject||'').slice(0,400),sender:String(m.sender||'').slice(0,250),
-   date:String(m.date||'').slice(0,35),snippet:String(m.snippet||'').slice(0,650)
+   date:String(m.date||'').slice(0,35),snippet:String(m.snippet||'').slice(0,650),labelIds:(Array.isArray(m.labelIds)?m.labelIds:[]).slice(0,18).map(String)
  });
  const cleanCandidate=c=>{
    const x={};
-   for(const key of ['key','messageId','merchant','subject','date','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion']){
+   for(const key of ['key','messageId','merchant','subject','date','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion','signal','evidenceLevel','reference','confidence','why']){
      const value=c[key];x[key]=value==null?null:String(value).slice(0,key==='source'?650:450);
    }
+   x.analysisVersion=Number(c.analysisVersion)||0;
    x.amount=Number(c.amount)||0;
    if(!Number.isFinite(x.amount)||x.amount<0||x.amount>1e9)throw new Error('Invalid amount in history data');
    return x;
@@ -25,8 +26,9 @@ function snapshot(data){
  const messages=(Array.isArray(data.messages)?data.messages:[]).slice(-2500).filter(m=>m&&m.id).map(cleanMessage);
  const payments=(Array.isArray(data.payments)?data.payments:[]).slice(0,2500).filter(c=>c&&c.key).map(cleanCandidate);
  const bills=(Array.isArray(data.bills)?data.bills:[]).slice(0,2500).filter(c=>c&&c.key).map(cleanCandidate);
- return {version:4,email,updatedAt:new Date().toISOString(),lastSync:String(data.lastSync||'').slice(0,35),
-    messages,payments,bills};
+ const legacy=(Array.isArray(data.legacy)?data.legacy:[]).slice(0,500).map(cleanCandidate);
+ return {version:5,email,updatedAt:new Date().toISOString(),lastSync:String(data.lastSync||'').slice(0,35),
+    messages,payments,bills,legacy};
 }
 function db(){
  if(dbPromise)return dbPromise;

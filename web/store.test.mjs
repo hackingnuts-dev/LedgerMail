@@ -4,7 +4,7 @@ const Store=createRequire(import.meta.url)('./store.js');
 const base={email:' Person@Gmail.com ',token:'SECRET-BEARER-TOKEN',refreshToken:'SHOULD-NOT-PERSIST',messages:[{id:'id1',subject:'Receipt',snippet:'$10',token:'BAD',sender:'Shop'}],payments:[{key:'x',amount:10,status:'PAID',token:'BAD'}],bills:[]};
 const s=Store.snapshot(base);
 assert.equal(s.email,'person@gmail.com');
-assert.equal(s.version,4);
+assert.equal(s.version,5);
 assert.equal(s.payments[0].status,'PAID');
 assert.equal(s.messages[0].snippet,'$10');
 assert.equal(JSON.stringify(s).includes('SECRET-BEARER-TOKEN'),false,'Bearer tokens must never enter local history');

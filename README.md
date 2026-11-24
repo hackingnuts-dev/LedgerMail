@@ -50,3 +50,13 @@ The app accepts any Gmail identity returned by the Gmail profile endpoint after 
 - Google Identity Services' browser token model requires a user action to acquire a fresh short-lived token. This static, free-hosted app therefore cannot promise permanent automatic Gmail sign-in/background synchronization: use Reconnect Gmail, which reuses existing Google consent when possible. A continuously connected Gmail service would require a secure server-side OAuth code flow and refresh-token vault.
 - Authentication, synchronization, storage and payment review have explicit state transition guards with regression tests.
 - Version 4 stores historical candidate records from past scans but scans only a window of recent emails per manual/connected synchronization.
+
+## v5: Quiet financial intelligence (Primary only)
+- The financial scanner queries only Gmail Primary (label CATEGORY_PRIMARY), excludes Promotions, Social, Updates, Forums, Spam, Trash, and checks each returned message category again.
+- The scanner fetches **format=full**, reads and decodes MIME text/plain (or sanitized HTML text fallback) and analyzes the actual email body. Subject/preview alone never creates a transaction.
+- Promotional content, OTPs, refunds and incoming deposits are filtered. Strict amount-to-payment evidence rules choose total paid, not price advertisements/subtotals.
+- The home page includes only high-confidence completed-looking receipts; no ambiguous items in the monthly amount. Bills have their own section, and uncertain emails are hidden behind a small review button.
+- Emails remain **not bank-verified**; absence of an email is not proof no transaction occurred. 'Likely completed' refers to email evidence, not account settlement.
+- Old v4 subject-only matches are quarantined and excluded from totals on next open; a new scan is required to rebuild trustworthy items. Those old records can be exported as part of the local backup.
+- The app processes full mail text only in memory, storing short evidence excerpts. Gmail access tokens remain transient, with no server.
+- Scans have a 90-day query window and maximum 300 matching Primary messages per pass; partial scans are explicitly labeled. Gmail category filtering can omit legitimate financial messages that Gmail has placed in Updates.

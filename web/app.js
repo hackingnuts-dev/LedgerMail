@@ -1,11 +1,11 @@
 /* LedgerMail v4: explicit state machines, local per-account history, explainable candidate review. */
 'use strict';
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
-const E=window.LedgerEngine, Store=window.LedgerStore;
-if(!E||!Store)throw new Error('LedgerMail finance dependencies missing. Reload the app.');
+const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStrict;
+if(!E||!Store||!Strict)throw new Error('LedgerMail finance dependencies missing. Reload the app.');
 const state={phase:'DISCONNECTED',email:null,token:null,expiresAt:0,controller:null,generation:0,
- messages:[],payments:[],bills:[],pageToken:null,mailQuery:'in:anywhere newer_than:90d',
- mailBusy:false,mailPhase:'IDLE',route:'dashboard',backupPhase:'IDLE',syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null};
+ messages:[],payments:[],bills:[],pageToken:null,mailQuery:'',
+ mailBusy:false,mailPhase:'IDLE',route:'dashboard',backupPhase:'IDLE',syncPhase:'IDLE',storagePhase:'BOOTING',lastSync:null,persistPending:0,storageError:null,legacy:[],scanStats:null};
 const el=id=>document.getElementById(id);
 const money=(amount,currency='USD')=>{try{return new Intl.NumberFormat('en-US',{style:'currency',currency}).format(amount)}catch{return String(amount)+' '+currency}};
 const monthKey=d=>{const date=new Date(d);return isNaN(date)?'unknown':date.toISOString().slice(0,7)};
@@ -120,11 +120,11 @@ function resetSession({clearView=false}={}){
  state.controller?.abort();state.controller=null;
  state.token=null;state.expiresAt=0;state.pageToken=null;if(state.mailPhase!=='IDLE')setMailPhase('IDLE');state.mailBusy=false;
  if(state.syncPhase!=='IDLE')setSyncPhase('IDLE');
- if(clearView){state.messages=[];state.payments=[];state.bills=[];state.lastSync=null;state.email=null}
+ if(clearView){state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;state.email=null}
  setPhase('DISCONNECTED');render();
 }
 function disconnect(){resetSession();toast('Gmail disconnected. Your saved history remains on this device.')}
-function getAccountRecord(){return {email:state.email,messages:state.messages,payments:state.payments,bills:state.bills,lastSync:state.lastSync}}
+function getAccountRecord(){return {email:state.email,messages:state.messages,payments:state.payments,bills:state.bills,legacy:state.legacy,lastSync:state.lastSync}}
 async function saveHistory(){
  if(!state.email || state.storagePhase==='ERROR'||state.storagePhase==='BOOTING'||state.storagePhase==='LOADING')return;
  const copy=getAccountRecord();state.persistPending++;
@@ -135,15 +135,22 @@ async function saveHistory(){
  if(state.persistPending===0&&state.storagePhase==='SAVING')setStoragePhase('READY');
 }
 function applyAccount(record,email){
- const normalized=String(email||'').toLowerCase();
+ const normalized=String(email||'').trim().toLowerCase();
  const x=record&&record.email===normalized?record:null;
  state.email=normalized||null;
- state.messages=Array.isArray(x?.messages)?x.messages:[];
- state.payments=Array.isArray(x?.payments)?x.payments.map(c=>({...c,status:E.normalizeStatus(c.status)})):[];
- state.bills=Array.isArray(x?.bills)?x.bills.map(c=>({...c,status:E.normalizeStatus(c.status)})):[];
- state.lastSync=x?.lastSync||null;state.pageToken=null;
+ const payments=Array.isArray(x?.payments)?x.payments:[];
+ const bills=Array.isArray(x?.bills)?x.bills:[];
+ const valid=c=>Number(c?.analysisVersion)===5&&c.evidenceLevel==='PRIMARY_FULL';
+ state.legacy=[...(x?.legacy||[]),...payments.filter(c=>!valid(c)),...bills.filter(c=>!valid(c))]
+   .filter(Boolean).slice(-500);
+ state.messages=(Array.isArray(x?.messages)?x.messages:[]).filter(m=>Strict.isPrimary(m.labelIds));
+ state.payments=payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
+ state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
+ state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
+ state.scanStats=null;state.pageToken=null;
  render();updateStorageBanner();
 }
+
 async function loadAccount(email,generation){
  const record=await Store.read(email);
  if(generation!==state.generation)return false;
@@ -181,7 +188,7 @@ function connect(){
      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw new Error('Google did not return a valid Gmail address');
      if(email!==previousEmail){
        // Prevent mixing financial records from separate Gmail accounts.
-       state.messages=[];state.payments=[];state.bills=[];state.lastSync=null;render();
+       state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;render();
        if(state.storagePhase!=='ERROR')await loadAccount(email,generation);
        else applyAccount(null,email);
      }else state.email=email;
@@ -203,56 +210,68 @@ function requireToken(){if(!state.token||Date.now()>=state.expiresAt){state.toke
 async function api(path,signal){const token=requireToken();const res=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/'+path,{headers:{Authorization:'Bearer '+token},signal});if(res.status===401){state.token=null;setPhase('EXPIRED');throw new Error('Gmail authorization expired. Reconnect.')};if(!res.ok){let detail='';try{detail=(await res.json()).error?.message||''}catch{}throw new Error('Gmail request failed ('+res.status+'): '+detail)}return res.json()}
 const headers=m=>Object.fromEntries((m.payload?.headers||[]).map(h=>[h.name.toLowerCase(),h.value]));
 function parseMessage(raw){const h=headers(raw);return{id:raw.id,threadId:raw.threadId,subject:h.subject||'(no subject)',sender:h.from||'Unknown sender',date:new Date(Number(raw.internalDate)||Date.now()).toISOString(),snippet:raw.snippet||'',labelIds:raw.labelIds||[]}}
-/* Receipt and bill detection lives in the audited, deterministic finance engine. */
-function rebuildCandidates(){
- const unique=[...new Map(state.messages.map(m=>[m.id,m])).values()];
- const parsed=unique.map(E.parseEmail).filter(Boolean);
- const old=[...state.payments,...state.bills];
- const combined=E.mergeCandidates(old,parsed);
- state.payments=combined.filter(c=>c.kind==='PAYMENT');
- state.bills=combined.filter(c=>c.kind==='BILL');
-}
+/* Financial candidate creation only occurs from Strict.parseGmailFull + Strict.classifyFullMail. */
 async function syncFinancial(){
  if(state.syncPhase==='RUNNING')return;
- if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to check for new transactions');return}
+ if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to scan new Primary messages');return}
  requireToken();
  setSyncPhase('RUNNING');
  const generation=state.generation,email=state.email;
  const ctrl=new AbortController();
  state.controller=ctrl;
- let total=0,next=null,failed=0;
- const scanned=[];
- el('syncStatus').textContent='Scanning recent financial emails…';
+ let scanned=0,failed=0,skipped=0,unreadable=0,next=null,limitReached=false;
+ const accepted=[],summaries=[],startedAt=Date.now();
+ el('syncStatus').textContent='Reviewing full emails from Gmail Primary…';
  try{
    do{
-     const query='(receipt OR payment OR statement OR "amount due" OR "order confirmed" OR transaction OR invoice OR "bill due") newer_than:90d';
-     let url='messages?maxResults=100&q='+encodeURIComponent(query);
-     if(next)url+='&pageToken='+encodeURIComponent(next);
-     const page=await api(url,ctrl.signal);
+     // Server-side category filter AND a second per-message label check.
+     let path='messages?maxResults=75&labelIds=CATEGORY_PRIMARY&q='+encodeURIComponent(Strict.PRIMARY_QUERY);
+     if(next)path+='&pageToken='+encodeURIComponent(next);
+     const page=await api(path,ctrl.signal);
      if(generation!==state.generation||state.email!==email)return;
-     const ids=(page.messages||[]).map(m=>m.id);
-     for(let i=0;i<ids.length;i+=8){
-       const results=await Promise.allSettled(ids.slice(i,i+8).map(id=>api('messages/'+encodeURIComponent(id)+'?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date',ctrl.signal)));
+     const ids=(page.messages||[]).map(m=>m.id).slice(0,Math.max(0,300-scanned));
+     for(let i=0;i<ids.length;i+=6){
+       const result=await Promise.allSettled(ids.slice(i,i+6).map(id=>
+         api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)));
        if(generation!==state.generation||state.email!==email)return;
-       for(const row of results){if(row.status==='fulfilled')scanned.push(parseMessage(row.value));else failed++}
-       total+=results.length;
-       el('syncStatus').textContent='Scanned '+total+' emails…';
+       for(const row of result){
+         scanned++;
+         if(row.status!=='fulfilled'){failed++;continue}
+         const m=Strict.parseGmailFull(row.value);
+         if(!m){unreadable++;continue}
+         const c=Strict.classifyFullMail(m);
+         if(!c){skipped++;continue}
+         accepted.push(c);
+         summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,
+           snippet:m.body.replace(/\s+/g,' ').slice(0,220),labelIds:m.labels});
+       }
+       el('syncStatus').textContent='Checked '+scanned+' Primary emails · '+accepted.length+' financial matches';
      }
      next=page.nextPageToken||null;
-   }while(next&&total<300);
+   }while(next&&scanned<300);
    if(generation!==state.generation||state.email!==email)return;
-   state.messages=[...new Map([...state.messages,...scanned].map(m=>[m.id,m])).values()].slice(-2500);
-   rebuildCandidates();
+   limitReached=Boolean(next);
+   const complete=failed===0&&!limitReached&&unreadable===0;
+   const cutoff=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
+   state.payments=Strict.mergePrimary(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),cutoff,complete);
+   state.bills=Strict.mergePrimary(state.bills,accepted.filter(c=>c.kind==='BILL'),cutoff,complete);
+   state.messages=[...new Map([...state.messages.filter(m=>Strict.isPrimary(m.labelIds)),...summaries]
+     .map(m=>[m.id,m])).values()].slice(-2500);
    state.lastSync=new Date().toISOString();
-   setSyncPhase(failed?'PARTIAL':'COMPLETE');
-   el('syncStatus').textContent='Processed '+total+' emails'+(failed?' ('+failed+' unavailable)':'')+'. Review statuses before treating amounts as paid or due.';
-   render();await saveHistory();
-   toast('History updated and saved on this device');
+   state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,limitReached,
+     completed:complete,elapsedMs:Date.now()-startedAt};
+   setSyncPhase(complete?'COMPLETE':'PARTIAL');
+   el('syncStatus').textContent=complete?
+     'Primary scan complete · '+accepted.length+' financial emails found':
+     'Partial scan · '+accepted.length+' financial emails found. Some messages were not checked.';
+   render();
+   await saveHistory();
+   toast(accepted.length+' financial emails found; promotions and junk excluded');
  }catch(err){
    if(generation!==state.generation)return;
    if(err.name!=='AbortError'){
      setSyncPhase('ERROR');el('syncStatus').textContent=err.message;
-     toast(err.message);
+     toast('Primary scan failed: '+err.message);
    }
  }finally{
    if(generation===state.generation){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED'}
@@ -266,14 +285,14 @@ async function loadMail(append=false){
  setMailPhase('LOADING');
  const generation=state.generation, ctrl=new AbortController();
  try{
-   const query=state.mailQuery;
-   let path='messages?maxResults=25&q='+encodeURIComponent(query);
+   const query='category:primary -category:promotions -category:social -category:updates -category:forums '+state.mailQuery;
+   let path='messages?maxResults=25&labelIds=CATEGORY_PRIMARY&q='+encodeURIComponent(query);
    if(append)path+='&pageToken='+encodeURIComponent(state.pageToken);
    const page=await api(path,ctrl.signal);
    const data=await Promise.allSettled((page.messages||[]).map(m=>
      api('messages/'+encodeURIComponent(m.id)+'?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date',ctrl.signal)));
    if(generation!==state.generation)return;
-   const parsed=data.filter(x=>x.status==='fulfilled').map(x=>parseMessage(x.value));
+   const parsed=data.filter(x=>x.status==='fulfilled').map(x=>parseMessage(x.value)).filter(m=>Strict.isPrimary(m.labelIds));
    state.messages=[...new Map([...state.messages,...parsed].map(m=>[m.id,m])).values()].slice(-2500);
    state.pageToken=page.nextPageToken||null;
    renderMail(parsed,append);
@@ -287,7 +306,18 @@ async function loadMail(append=false){
  }
 }
 function renderMail(items,append){const node=el('mailList');if(!append)node.replaceChildren();if(!items.length&&!append){node.className='empty';node.textContent='No matching emails.'}else{node.className='';for(const m of items){const d=document.createElement('div');d.className='item';d.innerHTML='<div class="itemTop"><strong>'+escapeHTML(m.subject)+'</strong><small>'+escapeHTML(new Date(m.date).toLocaleDateString())+'</small></div><p>'+escapeHTML(m.sender)+'</p><p>'+escapeHTML(m.snippet)+'</p>';d.onclick=()=>showMail(m);node.append(d)}}el('loadMore').hidden=!state.pageToken}
-function showMail(m){el('dialogTitle').textContent=m.subject;el('dialogMeta').textContent=m.sender+' • '+new Date(m.date).toLocaleString();el('dialogText').textContent=m.snippet+'\n\nFor full message contents, open Gmail.';el('mailDialog').showModal()}
+async function showMail(m){
+ if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to view full message');return}
+ el('dialogTitle').textContent=m.subject;
+ el('dialogMeta').textContent=m.sender+' · '+new Date(m.date).toLocaleString();
+ el('dialogText').textContent='Reading full message…';
+ el('mailDialog').showModal();
+ try{
+   const raw=await api('messages/'+encodeURIComponent(m.id)+'?format=full');
+   const full=Strict.parseGmailFull(raw);
+   el('dialogText').textContent=full?full.body.slice(0,45000):'This email is not available in Primary or has no readable text body.';
+ }catch(err){el('dialogText').textContent='Unable to open message: '+err.message}
+}
 function statusLabel(status){
  return ({REVIEW:'Needs review',PAID:'Paid (you confirmed)',DUE:'Due / unpaid (you marked)',IGNORED:'Ignored'})[E.normalizeStatus(status)]||'Needs review';
 }
@@ -298,92 +328,136 @@ function reviewCandidate(c,next){
  render();saveHistory();
 }
 function itemCard(c){
- const node=document.createElement('article');
- node.className='item';node.dataset.review=E.normalizeStatus(c.status);
- const evidence=c.reviewSuggestion||c.evidence||'Email-derived candidate — verify against original statement';
- const suggestion=({LIKELY_PAID:'Email suggests paid',POSSIBLY_DUE:'Email suggests due',STATEMENT_ONLY:'Statement: status unknown',PURCHASE_UNVERIFIED:'Purchase: payment unverified'})[c.suggestedStatus]||null;
- const label=statusLabel(c.status);
- const subtitle=String(c.date).slice(0,10)+(c.dueDate?' · Due '+c.dueDate:'')+' · '+(c.category||'Other');
- node.innerHTML='<div class="detail-row"><span class="detail-title">'+escapeHTML(c.merchant)+'</span><strong>'+money(c.amount,c.currency)+'</strong></div>'+
-   '<div class="detail-sub">'+escapeHTML(c.subject)+'</div>'+
-   '<div class="detail-sub">'+escapeHTML(subtitle)+'</div>'+
-   '<div class="review-head"><span class="review-pill '+E.normalizeStatus(c.status).toLowerCase()+'">'+escapeHTML(label)+'</span>'+
-   (c.possibleDuplicateOf?'<span class="review-pill">Possible duplicate · verify</span>':'')+
-   (E.normalizeStatus(c.status)==='REVIEW'&&suggestion?'<span class="review-pill suggestion">'+escapeHTML(suggestion)+'</span>':'')+'</div>'+
-   '<div class="detail-sub">'+escapeHTML(evidence)+'</div>';
+ const node=document.createElement('details');
+ node.className='transaction-row';node.dataset.review=E.normalizeStatus(c.status);
+ const status=E.normalizeStatus(c.status);
+ const statusText=status==='PAID'?'You marked paid':status==='DUE'?'You marked due':
+   status==='IGNORED'?'Ignored':c.kind==='BILL'?'Bill notice':
+   c.confidence==='HIGH'?'Email reports completed':'Needs review';
+ const top=document.createElement('summary');
+ const title=document.createElement('div');title.className='transaction-title';
+ const merchant=document.createElement('strong');merchant.textContent=c.merchant;
+ const meta=document.createElement('small');meta.textContent=String(c.date).slice(0,10)+' · '+(c.category||'Other');
+ title.append(merchant,meta);
+ const right=document.createElement('div');right.className='transaction-number';
+ const amount=document.createElement('strong');amount.textContent=money(c.amount,c.currency);
+ const label=document.createElement('small');label.textContent=statusText;
+ if(status==='DUE')label.className='badge-warn';
+ right.append(amount,label);top.append(title,right);
+ const body=document.createElement('div');body.className='expanded-details';
+ const explanation=document.createElement('p');
+ explanation.textContent=c.reviewSuggestion||c.evidence||'Email-based estimate: verify in your account';
+ const proof=document.createElement('p');
+ proof.textContent='Why this was included: '+(c.evidence||'Full email content')+'. Evidence: '+(c.source||'Not available');
+ const subject=document.createElement('p');subject.textContent='Email: '+c.subject;
+ body.append(explanation,proof,subject);
+ if(c.dueDate){const due=document.createElement('p');due.textContent='Due date mentioned: '+c.dueDate;body.append(due)}
+ if(c.possibleDuplicateOf){const dup=document.createElement('p');dup.textContent='Possible duplicate receipt (same transaction reference); excluded from totals until reviewed.';body.append(dup)}
  const actions=document.createElement('div');actions.className='actions';
- for(const [next,text] of [['PAID','Mark paid'],['DUE','Due / unpaid'],['IGNORED','Ignore'],['REVIEW','Reset review']]){
-   if(E.normalizeStatus(c.status)===next)continue;
-   const btn=document.createElement('button');btn.className='secondary';btn.type='button';btn.textContent=text;btn.onclick=()=>reviewCandidate(c,next);actions.append(btn);
+ for(const [next,text] of [['PAID','I paid this'],['DUE','Still due / unpaid'],['IGNORED','Not mine / ignore'],['REVIEW','Undo my decision']]){
+   if(status===next)continue;
+   const btn=document.createElement('button');btn.className='secondary';btn.type='button';btn.textContent=text;
+   btn.onclick=()=>reviewCandidate(c,next);actions.append(btn);
  }
- const link=document.createElement('button');link.className='secondary';link.type='button';link.textContent='Open email';
- link.onclick=()=>{
-   const authuser=encodeURIComponent(state.email||'');
-   window.open('https://mail.google.com/mail/?authuser='+authuser+'#all/'+encodeURIComponent(c.messageId),'_blank','noopener,noreferrer');
- };
- actions.append(link);node.append(actions);return node;
+ const link=document.createElement('button');link.className='secondary';link.type='button';link.textContent='Open original email';
+ link.onclick=()=>window.open('https://mail.google.com/mail/?authuser='+
+    encodeURIComponent(state.email||'')+'#all/'+encodeURIComponent(c.messageId),'_blank','noopener,noreferrer');
+ actions.append(link);body.append(actions);node.append(top,body);
+ return node;
 }
-function allCandidates(){return [...state.payments,...state.bills]}
-function moneyList(candidates,status){
- const totals={};
- for(const item of candidates.filter(x=>E.normalizeStatus(x.status)===status)){
-   totals[item.currency||'USD']=(totals[item.currency||'USD']||0)+item.amount;
- }
- return Object.entries(totals).map(([curr,value])=>money(value,curr)).join(' + ')||'None';
+function paymentEligible(c){
+ return Number(c.analysisVersion)===5&&c.kind==='PAYMENT'&&
+ (c.confidence==='HIGH'||E.normalizeStatus(c.status)==='PAID')&&
+ !['IGNORED','DUE'].includes(E.normalizeStatus(c.status))&&!c.possibleDuplicateOf;
 }
+function compactRow(c){
+ const node=document.createElement('button');node.type='button';node.className='clean-row';
+ const left=document.createElement('span');left.className='clean-main';
+ const merchant=document.createElement('strong');merchant.textContent=c.merchant;
+ const meta=document.createElement('small');meta.textContent=new Date(c.date).toLocaleDateString()+' · Receipt evidence';
+ left.append(merchant,meta);
+ const right=document.createElement('span');
+ const amt=document.createElement('div');amt.className='clean-amount';amt.textContent=money(c.amount,c.currency);
+ const badge=document.createElement('div');badge.className='clean-badge';badge.textContent=E.normalizeStatus(c.status)==='PAID'?'You confirmed paid':'Email reports completed';
+ right.append(amt,badge);node.append(left,right);
+ node.onclick=()=>{el('paymentStatusFilter').value='clear';route('payments')};
+ return node;
+}
+
 function render(){
- const today=new Date(),current=monthKey(today),S=E.summary(state.payments,current);
- const currencies=Object.entries(S.groups);
- const fmt=key=>currencies.map(([curr,g])=>money(g[key],curr)).join(' + ')||'$0.00';
- el('monthTotal').textContent=fmt('detected');
- el('paidHint').textContent='You confirmed paid: '+fmt('paid');
- el('monthLabel').textContent=today.toLocaleDateString('en-US',{month:'long',year:'numeric'})+
-   ' · '+S.reviewCount+' need review'+(S.possibleDuplicateCount?' · '+S.possibleDuplicateCount+' possible duplicates excluded':'');
- el('paymentCount').textContent=state.payments.filter(c=>E.normalizeStatus(c.status)!=='IGNORED').length;
+ const today=new Date(),current=monthKey(today);
+ const eligible=state.payments.filter(c=>paymentEligible(c)&&monthKey(c.date)===current);
+ const totals={};
+ for(const c of eligible)totals[c.currency]=(totals[c.currency]||0)+c.amount;
+ const formatted=Object.entries(totals).map(([cur,sum])=>money(sum,cur)).join(' + ')||'$0.00';
+ el('monthTotal').textContent=formatted;
+ el('paidHint').textContent='Based on '+eligible.length+' clear receipt'+(eligible.length===1?'':'s')+' · not bank verified';
+ el('monthLabel').textContent=today.toLocaleDateString('en-US',{month:'long',year:'numeric'})+' · Primary only';
+ el('paymentCount').textContent=state.payments.filter(paymentEligible).length;
  el('billCount').textContent=state.bills.filter(c=>E.normalizeStatus(c.status)!=='IGNORED').length;
+ const uncertain=state.payments.filter(c=>E.normalizeStatus(c.status)==='REVIEW'&&
+   (c.confidence!=='HIGH'||c.possibleDuplicateOf));
+ const nudge=el('reviewNudge');
+ nudge.hidden=uncertain.length===0;
+ el('reviewNudgeCount').textContent=String(uncertain.length);
  const recent=el('recent');recent.replaceChildren();
- const latest=state.payments.filter(c=>E.normalizeStatus(c.status)!=='IGNORED').slice(0,4);
- if(!latest.length){recent.className='empty';recent.textContent=state.email?'No detected payment candidates yet':'Connect Gmail to look for receipts and payments'}
- else{recent.className='';latest.forEach(c=>recent.append(itemCard(c)))}
+ const latest=state.payments.filter(paymentEligible).slice(0,3);
+ if(!latest.length){
+   recent.className='empty';
+   recent.textContent=state.email?'No clear purchase transactions found yet. This is better than counting ads or guesses.':'Connect Gmail to scan Primary for transaction receipts.';
+ }else{recent.className='';latest.forEach(c=>recent.append(compactRow(c)))}
  const select=el('monthSelect'),previous=select.value;
  const months=[...new Set(state.payments.map(x=>monthKey(x.date)))].sort().reverse();
  select.replaceChildren(new Option('All months','all'));
  months.forEach(m=>select.add(new Option(m,m)));select.value=months.includes(previous)?previous:'all';
- renderPayments();
- renderBills();
+ renderPayments();renderBills();
  const due=E.billSummary(state.bills);
- el('dueSummary').textContent=due.count?due.count+' bills marked due / unpaid · '+moneyList(due.due,'DUE')+
-   (due.overdue.length?' · '+due.overdue.length+' past the extracted due date':''):
-   'No bills have been marked unpaid yet. '+due.review+' still need review.';
+ el('dueSummary').textContent=due.count?due.count+' bill(s) you marked unpaid · '+moneyList(due.due,'DUE'):
+   state.bills.length+' bill notice(s) found. Verify their current status.';
+ const notice=el('legacyNotice');
+ notice.hidden=!state.legacy.length;
+ if(state.legacy.length)notice.textContent=state.legacy.length+' old subject-only matches are hidden for accuracy. Reconnect and scan Primary again.';
+ const info=el('scanDetails');
+ if(state.scanStats){
+   const st=state.scanStats;
+   info.textContent='Full email analysis · '+st.scanned+' Primary emails checked · '+st.skipped+' unrelated excluded'+
+     (st.failed||st.unreadable?' · '+(st.failed+st.unreadable)+' not fully read':'')+
+     (st.limitReached?' · 300-message limit reached':'');
+ }else info.textContent=state.lastSync?'Last scan saved; only Primary full-email matches are shown.':'Primary-only · full email text analyzed locally · no attachments';
  updateStorageBanner();
 }
 function renderBills(){
  const selected=el('billStatusFilter')?.value||'all';
- const b=el('billList');b.replaceChildren();
- const rank={DUE:0,REVIEW:1,PAID:2,IGNORED:3};
- const bills=state.bills.filter(c=>selected==='all'||E.normalizeStatus(c.status)===selected)
-   .sort((a,b)=>(rank[E.normalizeStatus(a.status)]??9)-(rank[E.normalizeStatus(b.status)]??9)||b.date.localeCompare(a.date));
- if(!bills.length){b.className='empty';b.textContent='No bills match this status'}
- else{b.className='';bills.forEach(c=>b.append(itemCard(c)))}
+ const node=el('billList');node.replaceChildren();
+ const order={DUE:0,REVIEW:1,PAID:2,IGNORED:3};
+ const list=state.bills.filter(c=>selected==='all'||E.normalizeStatus(c.status)===selected)
+   .sort((a,b)=>(order[E.normalizeStatus(a.status)]??9)-(order[E.normalizeStatus(b.status)]??9)||b.date.localeCompare(a.date));
+ if(!list.length){node.className='empty';node.textContent='No matching bill notices from Primary.'}
+ else{node.className='';list.forEach(c=>node.append(itemCard(c)))}
 }
 function renderPayments(){
- const q=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;
- const status=el('paymentStatusFilter')?.value||'all';
- const list=state.payments.filter(x=>(month==='all'||monthKey(x.date)===month)&&
-   (status==='all'||E.normalizeStatus(x.status)===status)&&
-   (x.merchant+' '+x.subject).toLowerCase().includes(q));
- el('confirmedTotal').textContent=moneyList(list,'PAID');
- const n=el('paymentList');n.replaceChildren();
- if(!list.length){n.className='empty';n.textContent='No payment candidates match'}
- else{n.className='';list.forEach(c=>n.append(itemCard(c)))}
+ const query=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;
+ const status=el('paymentStatusFilter')?.value||'clear';
+ const list=state.payments.filter(c=>(month==='all'||monthKey(c.date)===month)&&
+   (c.merchant+' '+c.subject).toLowerCase().includes(query)&&
+   (status==='clear'?paymentEligible(c):
+     status==='needs-attention'?E.normalizeStatus(c.status)==='REVIEW'&&(c.confidence!=='HIGH'||c.possibleDuplicateOf):
+     status==='all'?true:E.normalizeStatus(c.status)===status));
+ el('confirmedTotal').textContent=moneyList(state.payments.filter(c=>c.analysisVersion===5),'PAID');
+ const node=el('paymentList');node.replaceChildren();
+ if(!list.length){
+   node.className='empty';node.textContent=status==='clear'?'No clear payment receipts in this view. Uncertain emails are kept separately.':
+     status==='needs-attention'?'Nothing uncertain needs your attention.':'No transactions match this selection.';
+ }else{node.className='';list.forEach(c=>node.append(itemCard(c)))}
 }
+
 function openBreakdown(){
- const month=monthKey(new Date()),S=E.summary(state.payments,month);
+ const month=monthKey(new Date()),eligible=state.payments.filter(c=>paymentEligible(c)&&monthKey(c.date)===month),S=E.summary(eligible,month);
  el('breakdownTitle').textContent='Spending breakdown · '+month;
- el('breakdownCaption').textContent='These are candidate amounts from email, not bank-verified spending. Only entries marked Paid have been reviewed by you.';
+ el('breakdownCaption').textContent='Only strong Primary email receipts and items you marked paid. Bills, ads and uncertain matches are excluded. Emails do not prove bank settlement.';
  const metrics=el('breakdownMetrics');metrics.replaceChildren();
  for(const [currency,g] of Object.entries(S.groups)){
-   for(const [label,key] of [['Detected','detected'],['Confirmed paid','paid'],['Marked due','due'],['Needs review','review']]){
+   for(const [label,key] of [['Likely completed','detected'],['You confirmed paid','paid']]){
      const tile=document.createElement('div');tile.className='breakdown-tile';
      const a=document.createElement('span');a.textContent=currency+' · '+label;
      const b=document.createElement('strong');b.textContent=money(g[key],currency);
@@ -425,6 +499,7 @@ function openBreakdown(){
  el('breakdownDialog').showModal();
 }
 
+el('reviewNudge').onclick=()=>{el('paymentStatusFilter').value='needs-attention';route('payments')};
 el('paymentSearch').oninput=renderPayments;
 el('monthSelect').onchange=renderPayments;
 el('paymentStatusFilter').onchange=renderPayments;
@@ -447,12 +522,12 @@ el('clear').onclick=async()=>{
  if(state.mailPhase!=='IDLE')setMailPhase('IDLE');
  try{
    await Store.remove(account);
-   state.messages=[];state.payments=[];state.bills=[];state.lastSync=null;
+   state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.lastSync=null;
    render();toast('Saved history deleted for '+account);
  }catch(err){toast('Cannot delete saved history: '+err.message)}
 };
 el('sync').onclick=syncFinancial;
-el('searchMail').onclick=()=>{state.mailQuery=el('mailSearch').value.trim()||'in:anywhere newer_than:90d';state.pageToken=null;loadMail(false)};
+el('searchMail').onclick=()=>{state.mailQuery=el('mailSearch').value.trim();state.pageToken=null;loadMail(false)};
 el('mailSearch').onkeydown=e=>{if(e.key==='Enter')el('searchMail').click()};
 el('loadMore').onclick=()=>loadMail(true);
 el('closeDialog').onclick=()=>el('mailDialog').close();
@@ -478,7 +553,7 @@ el('backupFile').onchange=async()=>{
  try{
    const raw=JSON.parse(await file.text());
    setBackupPhase('VALIDATING');
-   if(raw.version!==4||!raw.email)throw Error('Not a LedgerMail v4 backup');
+   if(![4,5].includes(Number(raw.version))||!raw.email)throw Error('Not a LedgerMail v4 or v5 backup');
    const record=Store.snapshot(raw);
    if(!confirm('Restore financial history for '+record.email+'? It will replace saved records for that account.')){
      setBackupPhase('IDLE');return;
