@@ -3,12 +3,12 @@
  * persist only concise explanations, never the entire body or OAuth tokens. */
 (function(root){
 'use strict';
-const CATEGORY_REQUIRED='CATEGORY_PRIMARY';
+// Primary is selected by Gmail search; some Primary messages have no category label.
 const CATEGORY_EXCLUDED=new Set(['CATEGORY_PROMOTIONS','CATEGORY_SOCIAL','CATEGORY_UPDATES','CATEGORY_FORUMS','SPAM','TRASH','DRAFT','SENT']);
 const PRIMARY_QUERY='category:primary newer_than:90d {receipt "payment" "debited" "charged" "purchase" "order" "statement" "bill" "transaction" "invoice"} -category:promotions -category:social -category:updates -category:forums -in:spam -in:trash';
 function isPrimary(labels){
  const set=new Set(Array.isArray(labels)?labels:[]);
- return set.has(CATEGORY_REQUIRED)&&![...set].some(x=>CATEGORY_EXCLUDED.has(x));
+ return Array.isArray(labels)&&![...set].some(x=>CATEGORY_EXCLUDED.has(x));
 }
 function decodeData(data){
  if(!data)return '';
@@ -175,11 +175,24 @@ function mergePrimary(oldItems,newItems,cutoffDate,fullyScanned){
    return {...item,possibleDuplicateOf:dup||null};
  });
 }
+function pendingGroups(items,today){
+ const groups={overdue:[],upcoming:[],unknown:[],paid:[]};
+ for(const c of items||[]){
+   if(c.status==='IGNORED'||c.possibleDuplicateOf)continue;
+   if(c.status==='PAID'){groups.paid.push(c);continue}
+   if(c.kind!=='BILL'&&c.status!=='DUE')continue;
+   if(c.dueDate&&c.dueDate<today)groups.overdue.push(c);
+   else if(c.dueDate)groups.upcoming.push(c);
+   else groups.unknown.push(c);
+ }
+ for(const list of Object.values(groups))list.sort((a,b)=>(a.dueDate||'9999').localeCompare(b.dueDate||'9999')||b.date.localeCompare(a.date));
+ return groups;
+}
 function visiblePayments(items,month){
  return (items||[]).filter(x=>x.kind==='PAYMENT'&&x.analysisVersion===5&&
    x.confidence==='HIGH'&&String(x.date).slice(0,7)===month&&!['IGNORED','DUE'].includes(x.status)&&!x.possibleDuplicateOf);
 }
-const API={PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
+const API={pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
 if(typeof module!=='undefined'&&module.exports)module.exports=API;
 root.LedgerStrict=API;
 })(typeof window!=='undefined'?window:globalThis);

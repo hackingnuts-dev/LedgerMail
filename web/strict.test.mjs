@@ -4,16 +4,16 @@ const R=createRequire(import.meta.url);
 const S=R('./strict.js');
 const E=R('./engine.js');
 const b64=str=>Buffer.from(str,'utf8').toString('base64url');
-function msg(id,subject,body,labels=['CATEGORY_PRIMARY'],mime='text/plain',extra=[]){
+function msg(id,subject,body,labels=['CATEGORY_PERSONAL'],mime='text/plain',extra=[]){
  return {id,threadId:id,internalDate:String(Date.parse('2026-11-20T15:00:00Z')),labelIds:labels,
    payload:{mimeType:mime,headers:[{name:'Subject',value:subject},{name:'From',value:'Acme Store <billing@acme.example>'},{name:'To',value:'test@gmail.com'},...extra],
    body:{size:body.length,data:b64(body)}}};
 }
 function extracted(raw){const m=S.parseGmailFull(raw);return m&&S.classifyFullMail(m)}
 assert(S.PRIMARY_QUERY.includes('category:primary'));
-assert(S.isPrimary(['CATEGORY_PRIMARY','INBOX']));
+assert(S.isPrimary(['CATEGORY_PERSONAL','INBOX']));
 for(const category of ['CATEGORY_PROMOTIONS','CATEGORY_UPDATES','CATEGORY_SOCIAL','CATEGORY_FORUMS','TRASH','SPAM'])
- assert(!S.isPrimary(['CATEGORY_PRIMARY',category]),category+' excluded');
+ assert(!S.isPrimary(['CATEGORY_PERSONAL',category]),category+' excluded');
 assert.equal(S.parseGmailFull(msg('pm','Payment successful','Your card was charged $21.00',['CATEGORY_PROMOTIONS'])),null);
 assert.equal(extracted(msg('ad','Limited time offer: save $285 today','Receipt? Save $285.00 with code SAVE285. Unsubscribe')),null);
 assert.equal(extracted(msg('otp','OTP for your Federal Scapia Credit Card transaction','Use OTP 209111 for your transaction of $285.00')),null);
@@ -41,7 +41,7 @@ nested.payload={mimeType:'multipart/alternative',headers:nested.payload.headers,
 },{mimeType:'text/html',body:{data:b64('<html><body><script>evil()</script><p>Pay $999.00</p></body></html>')}}]};
 const multipart=extracted(nested);
 assert(multipart&&multipart.amount===89.60,'prefer plain text and ignore html alternative');
-const html=msg('f','Receipt for payment','<html><head><style>h1{color:red}</style></head><body><p>Payment received</p><p>Total paid: $32.25</p><script>alert(1)</script></body></html>', ['CATEGORY_PRIMARY'],'text/html');
+const html=msg('f','Receipt for payment','<html><head><style>h1{color:red}</style></head><body><p>Payment received</p><p>Total paid: $32.25</p><script>alert(1)</script></body></html>', ['CATEGORY_PERSONAL'],'text/html');
 const htmlOut=extracted(html);
 assert(htmlOut&&htmlOut.amount===32.25,'HTML-only body parsed');
 const newlineRef=extracted(msg('g','Payment receipt','Payment successful. Amount paid: $61.00\nTransaction ID: XYZZY12345'));
@@ -57,3 +57,6 @@ assert.equal(remove.length,0,'non-primary/missing candidate removed on complete 
 assert(S.visiblePayments([purchase], '2026-11').length===1);
 assert(S.visiblePayments([{...purchase,confidence:'REVIEW'}], '2026-11').length===0);
 console.log('Strict Primary-only full MIME filtering and transaction evidence regression tests passed');
+
+assert(S.isPrimary(['INBOX']));assert(!S.isPrimary(['INBOX','CATEGORY_UPDATES']));
+const pending=S.pendingGroups([{kind:'BILL',status:'REVIEW',dueDate:'2026-11-01',date:'2026-10-01'},{kind:'BILL',status:'REVIEW',dueDate:'2026-12-01',date:'2026-11-01'},{kind:'BILL',status:'PAID',date:'2026-11-01'},{kind:'BILL',status:'REVIEW',date:'2026-11-01'}],'2026-11-23');assert.equal(pending.overdue.length,1);assert.equal(pending.upcoming.length,1);assert.equal(pending.unknown.length,1);assert.equal(pending.paid.length,1);

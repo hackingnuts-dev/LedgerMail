@@ -161,3 +161,5 @@ body[data-gmail="connected"] .status-dot{background:#77ebcd;box-shadow:0 0 12px 
 #legacyNotice{background:#203747;border:1px solid #3d6c80;border-radius:12px;padding:10px}
 .sectionHead{margin-top:25px}
 @media(max-width:385px){.clean-row .clean-amount{font-size:15px}.transaction-row .transaction-number strong{font-size:15px}}
+
+.pending-heading{font-size:14px;color:#b8d9e0;margin:24px 0 10px;letter-spacing:.15px}.mini[data-route]{cursor:pointer}

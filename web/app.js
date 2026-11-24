@@ -225,7 +225,7 @@ async function syncFinancial(){
  try{
    do{
      // Server-side category filter AND a second per-message label check.
-     let path='messages?maxResults=75&labelIds=CATEGORY_PRIMARY&q='+encodeURIComponent(Strict.PRIMARY_QUERY);
+     let path='messages?maxResults=75&q='+encodeURIComponent(Strict.PRIMARY_QUERY);
      if(next)path+='&pageToken='+encodeURIComponent(next);
      const page=await api(path,ctrl.signal);
      if(generation!==state.generation||state.email!==email)return;
@@ -287,7 +287,7 @@ async function loadMail(append=false){
  const generation=state.generation, ctrl=new AbortController();
  try{
    const query='category:primary -category:promotions -category:social -category:updates -category:forums '+state.mailQuery;
-   let path='messages?maxResults=25&labelIds=CATEGORY_PRIMARY&q='+encodeURIComponent(query);
+   let path='messages?maxResults=25&q='+encodeURIComponent(query);
    if(append)path+='&pageToken='+encodeURIComponent(state.pageToken);
    const page=await api(path,ctrl.signal);
    const data=await Promise.allSettled((page.messages||[]).map(m=>
@@ -338,7 +338,7 @@ function itemCard(c){
  const top=document.createElement('summary');
  const title=document.createElement('div');title.className='transaction-title';
  const merchant=document.createElement('strong');merchant.textContent=c.merchant;
- const meta=document.createElement('small');meta.textContent=String(c.date).slice(0,10)+' · '+(c.category||'Other');
+ const meta=document.createElement('small');meta.textContent=(c.kind==='BILL'?(c.dueDate?'Due '+c.dueDate:'Due date unknown'):String(c.date).slice(0,10))+' · '+(c.category||'Other');
  title.append(merchant,meta);
  const right=document.createElement('div');right.className='transaction-number';
  const amount=document.createElement('strong');amount.textContent=money(c.amount,c.currency);
@@ -402,7 +402,7 @@ function render(){
  el('paidHint').textContent='Based on '+eligible.length+' clear receipt'+(eligible.length===1?'':'s')+' · not bank verified';
  el('monthLabel').textContent=today.toLocaleDateString('en-US',{month:'long',year:'numeric'})+' · Primary only';
  el('paymentCount').textContent=state.payments.filter(paymentEligible).length;
- el('billCount').textContent=state.bills.filter(c=>E.normalizeStatus(c.status)!=='IGNORED').length;
+ el('billCount').textContent=[...state.bills,...state.payments.filter(c=>c.status==='DUE')].filter(c=>!['PAID','IGNORED'].includes(c.status)&&!c.possibleDuplicateOf).length;
  const uncertain=state.payments.filter(c=>E.normalizeStatus(c.status)==='REVIEW'&&
    (c.confidence!=='HIGH'||c.possibleDuplicateOf));
  const nudge=el('reviewNudge');
@@ -419,9 +419,9 @@ function render(){
  select.replaceChildren(new Option('All months','all'));
  months.forEach(m=>select.add(new Option(m,m)));select.value=months.includes(previous)?previous:'all';
  renderPayments();renderBills();
- const due=E.billSummary(state.bills);
- el('dueSummary').textContent=due.count?due.count+' bill(s) you marked unpaid · '+moneyList(due.due,'DUE'):
-   state.bills.length+' bill notice(s) found. Verify their current status.';
+ const pending=[...state.bills,...state.payments.filter(c=>c.status==='DUE')].filter(c=>!['PAID','IGNORED'].includes(c.status)&&!c.possibleDuplicateOf);
+ const sums={};for(const c of pending)sums[c.currency]=(sums[c.currency]||0)+c.amount;
+ el('dueSummary').textContent=pending.length?pending.length+' pending / to check · '+Object.entries(sums).map(([cur,n])=>money(n,cur)).join(' + ')+' (not verified outstanding)':'No pending payment notices found.';
  const notice=el('legacyNotice');
  notice.hidden=!state.legacy.length;
  if(state.legacy.length)notice.textContent=state.legacy.length+' old subject-only matches are hidden for accuracy. Reconnect and scan Primary again.';
@@ -435,13 +435,20 @@ function render(){
  updateStorageBanner();
 }
 function renderBills(){
- const selected=el('billStatusFilter')?.value||'all';
+ const selected=el('billStatusFilter')?.value||'pending';
  const node=el('billList');node.replaceChildren();
- const order={DUE:0,REVIEW:1,PAID:2,IGNORED:3};
- const list=state.bills.filter(c=>selected==='all'||E.normalizeStatus(c.status)===selected)
-   .sort((a,b)=>(order[E.normalizeStatus(a.status)]??9)-(order[E.normalizeStatus(b.status)]??9)||b.date.localeCompare(a.date));
- if(!list.length){node.className='empty';node.textContent='No matching bill notices from Primary.'}
- else{node.className='';list.forEach(c=>node.append(itemCard(c)))}
+ const items=[...state.bills,...state.payments.filter(c=>c.status==='DUE')];
+ if(selected==='pending'){
+   const now=new Date();const today=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+   const groups=Strict.pendingGroups(items,today);
+   for(const [key,label] of [['overdue','Past due date · check payment'],['upcoming','Upcoming due dates'],['unknown','Due date unknown']]){
+     if(!groups[key].length)continue;
+     const heading=document.createElement('h3');heading.className='pending-heading';heading.textContent=label+' ('+groups[key].length+')';node.append(heading);
+     groups[key].forEach(c=>node.append(itemCard(c)));
+   }
+ }else items.filter(c=>selected==='all'||E.normalizeStatus(c.status)===selected).sort((a,b)=>b.date.localeCompare(a.date)).forEach(c=>node.append(itemCard(c)));
+ node.className=node.children.length?'':'empty';
+ if(!node.children.length)node.textContent='No matching payment notices from Primary.';
 }
 function renderPayments(){
  const query=el('paymentSearch').value.toLowerCase(),month=el('monthSelect').value;

@@ -6,7 +6,7 @@ import {indexedDB} from 'fake-indexeddb';
 const html=fs.readFileSync('web/index.html','utf8');
 const scripts=['strict.js','engine.js','store.js','app.js'].map(f=>fs.readFileSync('web/'+f,'utf8'));
 const b64=s=>Buffer.from(s,'utf8').toString('base64url');
-const full=(id,subject,body,labels=['CATEGORY_PRIMARY'])=>({
+const full=(id,subject,body,labels=['INBOX','CATEGORY_PERSONAL'])=>({
  id,threadId:id,labelIds:labels,internalDate:String(Date.now()),
  payload:{mimeType:'text/plain',headers:[
   {name:'Subject',value:subject},
@@ -33,7 +33,7 @@ w.fetch=async(url,opts)=>{
  const u=new URL(url);calls.push(u.toString());
  if(u.pathname.endsWith('/profile'))return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})};
  if(u.pathname.endsWith('/messages')){
-   assert.equal(u.searchParams.get('labelIds'),'CATEGORY_PRIMARY');
+   assert.equal(u.searchParams.get('labelIds'),null);
    assert(u.searchParams.get('q').includes('category:primary'));
    assert(!u.searchParams.get('q').includes('in:anywhere'));
    return {ok:true,json:async()=>({messages:Object.keys(messages).map(id=>({id}))})};
