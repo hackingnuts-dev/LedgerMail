@@ -58,10 +58,12 @@ export async function gmail(account,path) {
 const recent = () => {const d=new Date(Date.now()-32*864e5);return d.toISOString().slice(0,10).replace(/-/g,"/");};
 const addMessages=async(account,ids) => {
  const old=new Set(account.messages.map(m=>m.id));
- for(const id of [...new Set(ids)].filter(x=>x&&!old.has(x)).slice(0,30)){
-  const m=await gmail(account,"messages/"+encodeURIComponent(id)+"?format=full");
-  // Store mail only for the owner's account, encrypted at rest.
-  account.messages.push(m);old.add(id);
+ const pending=[...new Set(ids)].filter(x=>x&&!old.has(x));
+ if(pending.length>20)throw Error("Batch exceeds safe processing limit; retry with smaller page");
+ // Bounded concurrent Gmail reads; long-running work is resumed by the next schedule.
+ for(let i=0;i<pending.length;i+=4){
+  const rows=await Promise.all(pending.slice(i,i+4).map(id=>gmail(account,"messages/"+encodeURIComponent(id)+"?format=full")));
+  for(const m of rows){if(!old.has(m.id)){account.messages.push(m);old.add(m.id)}}
  }
  account.messages=account.messages.slice(-500);
 };
@@ -71,7 +73,7 @@ export async function syncAccount(account){
   if(!account.backfillDone){
    if(!account.baselineId){const p=await gmail(account,"profile"); account.baselineId=p.historyId;}
    const query="after:"+recent();
-   const path="messages?maxResults=30&q="+encodeURIComponent(query)+(account.backfillCursor?"&pageToken="+encodeURIComponent(account.backfillCursor):"");
+   const path="messages?maxResults=20&q="+encodeURIComponent(query)+(account.backfillCursor?"&pageToken="+encodeURIComponent(account.backfillCursor):"");
    const page=await gmail(account,path);
    await addMessages(account,(page.messages||[]).map(x=>x.id));
    account.backfillCursor=page.nextPageToken||null;
@@ -81,7 +83,7 @@ export async function syncAccount(account){
    if(!start){account.backfillDone=false;}
    else{
     try{
-     const page=await gmail(account,"history?startHistoryId="+encodeURIComponent(start)+"&historyTypes=messageAdded&maxResults=100");
+     const page=await gmail(account,"history?startHistoryId="+encodeURIComponent(start)+"&historyTypes=messageAdded&maxResults=10");
      const ids=(page.history||[]).flatMap(h=>(h.messagesAdded||[]).map(x=>x.message?.id));
      await addMessages(account,ids);
      // Never advance the cursor across unprocessed pages.
