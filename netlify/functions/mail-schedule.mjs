@@ -1,4 +1,4 @@
-import { configured, listAccountIds, loadAccount, syncAccount } from "./mail-core.mjs";
+import { configured, listAccountIds, loadAccount, syncAccount } from "../lib/mail-core.mjs";
 export const config={schedule:"*/10 * * * *"};
 export default async function handler(){
  if(!configured()){console.error("LedgerMail: server Gmail settings missing");return;}
