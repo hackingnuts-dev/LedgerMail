@@ -1,0 +1,24 @@
+name: Verify LedgerMail background sync
+on:
+  pull_request:
+  push:
+    branches: [fix/background-gmail-sync-20261124]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+          node --check netlify/functions/mail-core.mjs
+          node --check netlify/functions/mail.mjs
+          node --check netlify/functions/mail-schedule.mjs
+      - name: Build website assets
+        run: npm run build
