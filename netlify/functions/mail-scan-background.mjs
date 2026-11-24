@@ -1,4 +1,4 @@
-import { checkWorkToken, loadAccount, syncAccount } from "./mail-core.mjs";
+import { checkWorkToken, loadAccount, syncAccount } from "../lib/mail-core.mjs";
 // New Netlify web Request function format. Background invocation returns 202 immediately.
 export default async function handler(request){
  try{
