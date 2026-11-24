@@ -237,6 +237,7 @@ async function syncFinancial(){
        for(const row of result){
          scanned++;
          if(row.status!=='fulfilled'){failed++;continue}
+         if(!Strict.isPrimary(row.value.labelIds)){skipped++;continue}
          const m=Strict.parseGmailFull(row.value);
          if(!m){unreadable++;continue}
          const c=Strict.classifyFullMail(m);
