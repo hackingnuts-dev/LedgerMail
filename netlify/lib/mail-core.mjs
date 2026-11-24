@@ -67,7 +67,7 @@ const addMessages=async(account,ids) => {
   const rows=await Promise.all(pending.slice(i,i+4).map(id=>gmail(account,"messages/"+encodeURIComponent(id)+"?format=full")));
   for(const m of rows){if(!old.has(m.id)){m._lmSeq=++account.nextSeq;account.messages.push(m);old.add(m.id)}}
  }
- account.messages=account.messages.slice(-500);
+ account.messages=account.messages.sort((a,b)=>Number(a.internalDate)-Number(b.internalDate)).slice(-500);
 };
 export async function syncAccount(account){
  const started=Date.now();
