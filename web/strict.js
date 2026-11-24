@@ -152,7 +152,7 @@ function classifyFullMail(email){
    reference:transactionReference(subject+' '+lead),
    dueDate:due?(!Number.isNaN(Date.parse(due))?new Date(due).toISOString().slice(0,10):null):null,
    evidence:strong?(kind==='BILL'?'Bill amount found in full email':'Payment amount tied to completion wording'):'Review required: payment evidence is incomplete',
-   source:hit.ctx.replace(/\b(?:\d[ -]?){13,19}\b/g,'[masked number]').slice(0,230),reviewSuggestion:kind==='BILL'?'Statement or amount-due notice; verify whether already settled':strong?'Email reports a completed payment; bank settlement not verified':'Ambiguous receipt: check the original email',
+   source:(()=>{const x=hit.ctx.replace(/\b(?:\d[ -]?){13,19}\b/g,'[masked number]');return x.slice(0,Math.min(160,Math.max(1,Math.floor(x.length*.78))))})(),reviewSuggestion:kind==='BILL'?'Statement or amount-due notice; verify whether already settled':strong?'Email reports a completed payment; bank settlement not verified':'Ambiguous receipt: check the original email',
    suggestedStatus:kind==='BILL'?'POSSIBLY_DUE':strong?'LIKELY_PAID':'PURCHASE_UNVERIFIED'
  };
 }

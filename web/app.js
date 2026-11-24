@@ -244,7 +244,7 @@ async function syncFinancial(){
          if(!c){skipped++;continue}
          accepted.push(c);
          summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,
-           snippet:m.body.replace(/\s+/g,' ').slice(0,220),labelIds:m.labels});
+           snippet:'Financial email analyzed locally',labelIds:m.labels});
        }
        el('syncStatus').textContent='Checked '+scanned+' Primary emails · '+accepted.length+' financial matches';
      }
@@ -294,7 +294,7 @@ async function loadMail(append=false){
      api('messages/'+encodeURIComponent(m.id)+'?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date',ctrl.signal)));
    if(generation!==state.generation)return;
    const parsed=data.filter(x=>x.status==='fulfilled').map(x=>parseMessage(x.value)).filter(m=>Strict.isPrimary(m.labelIds));
-   state.messages=[...new Map([...state.messages,...parsed].map(m=>[m.id,m])).values()].slice(-2500);
+   // Inbox search results are ephemeral: do not persist previews or unrelated Primary emails.
    state.pageToken=page.nextPageToken||null;
    renderMail(parsed,append);
    setMailPhase('READY');
