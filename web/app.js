@@ -1,6 +1,8 @@
 /* LedgerMail v4: explicit state machines, local per-account history, explainable candidate review. */
 'use strict';
-const APP_BUILD=17;
+const APP_BUILD=18;
+const MAIL_BACKEND='/.netlify/functions/mail';
+let backendAvailable=false,backgroundBusy=false;
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPE=SCOPE+' openid email';
 const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStrict;
@@ -126,7 +128,7 @@ function resetSession({clearView=false}={}){
  if(clearView){state.messages=[];state.payments=[];state.bills=[];state.legacy=[];state.scanStats=null;state.coverage={};state.includeUpdates=false;state.selectedMonth=monthKey(new Date());state.lastSync=null;state.email=null}
  setPhase('DISCONNECTED');render();
 }
-function disconnect(){resetSession();toast('Gmail disconnected. Your saved history remains on this device.')}
+async function disconnect(){if(backendAvailable){try{const r=await fetch(MAIL_BACKEND+'?action=disconnect',{method:'POST',credentials:'same-origin'});if(!r.ok)throw Error('Server disconnect failed')}catch(e){toast(e.message);return}}resetSession();toast('Gmail disconnected. Your saved history remains on this device.')}
 function getAccountRecord(){return {email:state.email,messages:state.messages,payments:state.payments,bills:state.bills,legacy:state.legacy,lastSync:state.lastSync,coverage:state.coverage,selectedMonth:state.selectedMonth,includeUpdates:state.includeUpdates}}
 async function saveHistory(){
  if(!state.email || state.storagePhase==='ERROR'||state.storagePhase==='BOOTING'||state.storagePhase==='LOADING')return;
@@ -161,7 +163,7 @@ async function loadAccount(email,generation){
  await Store.setLastEmail(email);
  return true;
 }
-function connect(){
+function connect(){if(backendAvailable){location.assign(MAIL_BACKEND+'?action=start');return}
  if(state.storagePhase==='LOADING'||state.storagePhase==='BOOTING'){toast('Opening saved history. Try again.');return}
  const client_id=getClientId().trim();
  if(!/^\d+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(client_id)){
@@ -217,7 +219,7 @@ async function verifyGoogleIdentity(token,generation){
  if(profile.email_verified!==true||typeof profile.email!=='string')throw Error('Google did not verify the account email. Reconnect and allow email access.');
  return profile;
 }
-function requireToken(){if(!state.token||Date.now()>=state.expiresAt){state.token=null;setPhase('EXPIRED');throw new Error('Google session expired. Connect again.')}return state.token}
+function requireToken(){if(backendAvailable&&state.phase==='CONNECTED')return 'SERVER_SESSION';if(!state.token||Date.now()>=state.expiresAt){state.token=null;setPhase('EXPIRED');throw new Error('Google session expired. Connect again.')}return state.token}
 // Shared, conservative request pacing; retries never switch accounts or reuse a stale token.
 let gmailTail=Promise.resolve(),gmailNext=0,gmailBlockedGeneration=-1;
 const Q=window.LedgerQuota;
@@ -262,7 +264,7 @@ async function reserveGmail(account,path,signal,check){
    await gmailWait(result.wait,signal);
  }
 }
-async function api(path,signal){
+async function api(path,signal){if(backendAvailable){const r=await fetch(MAIL_BACKEND+'?action=gmail&path='+encodeURIComponent(path),{credentials:'same-origin',cache:'no-store',signal});if(r.status===401){setPhase('EXPIRED');throw Error('Server Gmail session expired')}if(!r.ok)throw Error('Gmail server error '+r.status);return r.json()}
  const generation=state.generation,token=requireToken(),account=state.email;
  const check=()=>{if(signal?.aborted||generation!==state.generation||state.token!==token)throw abortError();requireToken()};
  const task=async()=>{
@@ -332,8 +334,8 @@ async function syncFinancial(){
        if(!active())return;
        const listed=[...new Set((page.messages||[]).map(m=>m.id))];retrieved+=listed.length;cached+=listed.filter(id=>seen.has(id)).length;
        const ids=listed.filter(id=>!seen.has(id));
-       for(let i=0;i<ids.length;i+=1){
-         const result=await Promise.allSettled(ids.slice(i,i+1).map(id=>(async()=>{if(broad){const meta=await api('messages/'+encodeURIComponent(id)+'?format=minimal',ctrl.signal);if(!(Strict.isPrimary(meta.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(meta.labelIds))))return meta;}return api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)})()));
+       for(let i=0;i<ids.length;i+=(backendAvailable?4:1)){
+         const result=await Promise.allSettled(ids.slice(i,i+(backendAvailable?4:1)).map(id=>(async()=>{if(broad){const meta=await api('messages/'+encodeURIComponent(id)+'?format=minimal',ctrl.signal);if(!(Strict.isPrimary(meta.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(meta.labelIds))))return meta;}return api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)})()));
          if(!active())return;
          for(const row of result){
            scanned++;
@@ -361,7 +363,7 @@ async function syncFinancial(){
            note(c.confidence==='HIGH'?'Strong financial evidence':'Needs review');
            accepted.push(c);summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,snippet:'Financial email analyzed locally',labelIds:m.labels});
          }
-         if(scanned%5===0||i===ids.length-1){
+         if(scanned%5===0||i+(backendAvailable?4:1)>=ids.length){
            if(!active())return;
            state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);
            state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);
@@ -713,6 +715,51 @@ el('backupFile').onchange=async()=>{
 el('clientId').value=getClientId();
 document.body.dataset.section='dashboard';document.querySelector('.nav.active')?.setAttribute('aria-current','page');
 setPhase('DISCONNECTED');render();
+
+async function refreshBackendSession(){
+ let res;try{res=await fetch(MAIL_BACKEND+'?action=session',{credentials:'same-origin',cache:'no-store'})}catch{return}
+ if(res.status===503){backendAvailable=false;return}
+ backendAvailable=true;if(res.status===401)return;if(!res.ok)return;
+ const session=await res.json(),email=String(session.email||'').toLowerCase();if(!email)return;
+ if(state.phase==='CONNECTED'&&state.email===email){await pullBackgroundMail();return}
+ const g=++state.generation;state.controller?.abort();state.controller=null;
+ if(state.phase==='CONNECTED')setPhase('DISCONNECTED');
+ setPhase('CONNECTING');setPhase('VERIFYING');
+ if(state.email!==email){if(state.storagePhase!=='ERROR')await loadAccount(email,g);else applyAccount(null,email)}
+ if(g!==state.generation)return;
+ state.email=email;state.token='SERVER_SESSION';state.expiresAt=Number.MAX_SAFE_INTEGER;
+ setPhase('CONNECTED');el('syncStatus').textContent='Gmail background sync connected';
+ await pullBackgroundMail();
+}
+async function pullBackgroundMail(){
+ if(!backendAvailable||state.phase!=='CONNECTED'||state.syncPhase==='RUNNING'||backgroundBusy)return;
+ backgroundBusy=true;const email=state.email,g=state.generation,key='ledgermail.bgCursor.'+email;
+ try{
+  const cursor=localStorage.getItem(key)||'';
+  const r=await fetch(MAIL_BACKEND+'?action=changes&limit=150'+(cursor?'&since='+encodeURIComponent(cursor):''),{credentials:'same-origin',cache:'no-store'});
+  if(!r.ok)throw Error('Background results temporarily unavailable');
+  const data=await r.json();if(email!==state.email||g!==state.generation)return;
+  const payments=[],bills=[],summaries=[];let maxDate=Number(cursor)||0;
+  for(const raw of data.messages||[]){
+   maxDate=Math.max(maxDate,Number(raw.internalDate)||0);
+   if(!(Strict.isPrimary(raw.labelIds)||(state.includeUpdates&&Strict.isFinancialUpdate(raw.labelIds))))continue;
+   const m=Strict.parseGmailFull(raw,state.includeUpdates);if(!m)continue;
+   const inspected=Strict.inspectEvidence(m,state.includeUpdates);
+   const c=Strict.structuredReceipt(m,state.includeUpdates)||Strict.classifyFullMail(m,state.includeUpdates)||inspected.candidate;
+   if(!c||c.confidence!=='HIGH')continue;
+   if(c.kind==='PAYMENT')payments.push(c);else if(c.kind==='BILL')bills.push(c);
+   summaries.push({id:m.id,threadId:m.threadId,subject:m.subject,sender:m.sender,date:m.date,snippet:'Financial email analyzed locally',labelIds:m.labels});
+  }
+  state.payments=Strict.mergePrimary(state.payments,payments,'',false);
+  state.bills=Strict.mergePrimary(state.bills,bills,'',false);
+  state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
+  if(summaries.length){state.lastSync=new Date().toISOString();await saveHistory();render()}
+  if(maxDate>Number(cursor))localStorage.setItem(key,String(maxDate));
+  el('syncStatus').textContent=data.lastError?'Background sync issue: '+data.lastError:'Background sync active'+(data.lastSync?' · last checked '+new Date(data.lastSync).toLocaleString():'');
+ }catch(e){el('syncStatus').textContent='Automatic sync retries: '+e.message}
+ finally{backgroundBusy=false}
+}
+
 async function initializeLocalHistory(){
  try{
    setStoragePhase('LOADING');
@@ -733,7 +780,9 @@ async function initializeLocalHistory(){
    toast('Local saving is unavailable. Check Safari privacy settings.');
  }
 }
-initializeLocalHistory();
+initializeLocalHistory().then(()=>refreshBackendSession());
+setInterval(()=>{if(!document.hidden)pullBackgroundMail()},90000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshBackendSession()});
 let updatingRelease=false;
 async function checkRelease(manual=false){
  if(updatingRelease)return true;
