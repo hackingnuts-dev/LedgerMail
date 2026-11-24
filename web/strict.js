@@ -109,6 +109,39 @@ function transactionReference(text){
 function normalizeFinanceText(value){
  return String(value||'').normalize('NFKC').replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g,'').replace(/[\u00a0\u202f]/g,' ').replace(/\r\n?/g,'\n');
 }
+function structuredReceipt(email,allowUpdates=false){
+ if(!email||!(isPrimary(email.labels)||(allowUpdates&&isFinancialUpdate(email.labels))))return null;
+ const subject=normalizeFinanceText(email.subject),body=normalizeFinanceText(trimQuoted(email.body));
+ if(OTP.test(subject)||OTP.test(body.slice(0,300))||PROMO_SUBJECT.test(subject)||/\b(payment failed|payment declined|transaction declined|refund issued|refund processed)\b/i.test(subject))return null;
+ const lines=body.split('\n').map(x=>x.trim()).filter(Boolean);
+ const fields=[];
+ for(let i=0;i<lines.length;i++){
+   const line=lines[i];
+   const match=line.match(/^(total amount due|total due|amount due|balance due|statement balance|amount paid|total paid|amount charged|amount debited|payment amount|minimum amount due|minimum payment|total|grand total)\b\s*[:\-]?\s*(.*)$/i);
+   if(!match)continue;
+   const value=match[2].trim()||lines[i+1]||'';
+   const amount=currencyAmounts(value)[0]||(()=>{const m=value.match(/^Rs\.?\s*([\d,]+(?:\.\d{1,2})?)/i);return m?{amount:Number(m[1].replace(/,/g,'')),currency:'INR'}:null})();
+   if(amount&&amount.amount>0)fields.push({...amount,label:match[1].toLowerCase()});
+ }
+ const isReceipt=/\b(receipt|tickets?|booking confirmation|payment successful|repayment successful|payment confirmation)\b/i.test(subject)||/\b(?:receipt #|booking id|payment method|paid via|payment type|amount charged)\b/i.test(body);
+ const paid=fields.find(x=>/^(amount paid|total paid|amount charged|amount debited)$/.test(x.label));
+ const due=fields.find(x=>/^(total amount due|total due|statement balance|amount due|balance due)$/.test(x.label));
+ const repayment=/\b(?:credit card bill payment|repayment successful|repayment is successful|payment of.{0,70}towards.{0,70}credit card)\b/i.test(subject+' '+body.slice(0,800));
+ const hit=paid||due;
+ if(PROMO_BODY.test(body.slice(0,900))&&!isReceipt)return null;
+ if(!hit||(!due&&!isReceipt&&!/\b(?:payment successful|payment completed|transaction successful)\b/i.test(subject+' '+body)))return null;
+ const kind=paid?'PAYMENT':'BILL';
+ const date=new Date(email.date);if(!Number.isFinite(date.getTime()))return null;
+ const paidDate=(body.match(/\b(?:date paid|paid on|payment time|booking date(?: & time)?)\s*[:\-]?\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})/i)||[])[1];
+ const dueDate=(body.match(/\b(?:due date|pay by|payment due date)\s*[:\-]?\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|\d{1,2}[\/-]\d{1,2}[\/-]\d{4}|\d{4}-\d{2}-\d{2})/i)||[])[1];
+ const parseDay=x=>x&&!Number.isNaN(Date.parse(x))?dateKey(new Date(x)):null;
+ const txDate=kind==='PAYMENT'?parseDay(paidDate):null;
+ const merchant=String(email.sender||'Unknown sender').split('<')[0].replace(/^["']|["']$/g,'').trim().slice(0,65)||'Unknown sender';
+ return {key:email.id,messageId:email.id,merchant,subject,date:date.toISOString(),transactionDate:txDate,amount:hit.amount,currency:hit.currency,
+ category:root.LedgerEngine?.category(subject+' '+merchant)||'Other',kind,status:'REVIEW',confidence:'HIGH',signal:repayment?'CARD_REPAYMENT':kind==='BILL'?'BILL_NOTICE':'COMPLETION_EMAIL',
+ evidenceLevel:isFinancialUpdate(email.labels)?'UPDATES_FULL':'PRIMARY_FULL',analysisVersion:5,reference:transactionReference(subject+' '+body),dueDate:parseDay(dueDate),
+ evidence:'Explicit '+hit.label+' field in full email',source:hit.label+': '+hit.currency+' '+hit.amount.toFixed(2),reviewSuggestion:repayment?'Credit card repayment; tracked separately from purchases.':'Check original email and account before relying on the amount.',suggestedStatus:kind==='BILL'?'POSSIBLY_DUE':'LIKELY_PAID'};
+}
 function inspectEvidence(email,allowUpdates=false){
  const reject=reason=>({candidate:null,reason});
  if(!email||!(isPrimary(email.labels)||(allowUpdates&&isFinancialUpdate(email.labels))))return reject('category');
@@ -117,7 +150,8 @@ function inspectEvidence(email,allowUpdates=false){
  if(!body.trim())return reject('no readable body');
  if(OTP.test(subject)||OTP.test(body.slice(0,650)))return reject('security / OTP');
  if(PROMO_SUBJECT.test(subject)||PROMO_BODY.test(body.slice(0,900)))return reject('marketing');
- if(INCOMING.test(subject+' '+body.slice(0,1000))||TRANSFER.test(subject+' '+body.slice(0,1000)))return reject('incoming / transfer');
+ if((INCOMING.test(subject)||/\b(refund (?:issued|processed|received)|deposit received|funds received|you received)\b/i.test(body.slice(0,250)))&&!/\b(statement|amount due|bill due)\b/i.test(subject+' '+body.slice(0,500)))return reject('incoming / transfer');
+ if(TRANSFER.test(subject+' '+body.slice(0,1000)))return reject('incoming / transfer');
  if(/\b(payment (?:failed|declined|cancelled|canceled|reversed)|transaction (?:declined|failed|reversed)|not (?:paid|charged)|no payment (?:was )?made)\b/i.test(text))return reject('failed / reversed');
  const receipt=/\b(receipt|payment confirmation|paid invoice|tax invoice|order confirmation|transaction alert|purchase alert|payment successful|payment received|card transaction)\b/i.test(subject);
  const completed=/\b(?:paid|debited|charged|payment (?:received|successful|completed|processed)|transaction (?:successful|completed|approved)|purchase (?:completed|approved)|thank you for your (?:payment|purchase)|status\s*[:\-]?\s*(?:paid|succeeded|successful))\b/i.test(body);
@@ -244,7 +278,7 @@ function mergePrimary(oldItems,newItems,cutoffDate,fullyScanned){
  for(const item of fresh)merged.set(item.key,item);
  const refs=new Map();
  return [...merged.values()].sort((a,b)=>b.date.localeCompare(a.date)).map(item=>{
-   const key=item.reference ? item.kind+'|'+item.merchant.toLowerCase()+'|'+item.reference+'|'+item.currency+'|'+item.amount : null;
+   const key=item.signal==='CARD_REPAYMENT'?'repayment|'+item.merchant.toLowerCase()+'|'+(item.transactionDate||dateKey(item.date))+'|'+item.currency+'|'+item.amount:item.reference ? item.kind+'|'+item.merchant.toLowerCase()+'|'+item.reference+'|'+item.currency+'|'+item.amount : null;
    const dup=key?refs.get(key):null;
    if(key&&!dup)refs.set(key,item.key);
    return {...item,possibleDuplicateOf:dup||null};
@@ -271,15 +305,15 @@ function monthBounds(month){
 function dateKey(value){const d=new Date(value);return Number.isFinite(d.getTime())?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}
 function monthlyQuery(month,updates=false){
  const b=monthBounds(month);
- return (updates?'category:updates':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash';
+ return (updates?'{category:primary category:updates}':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash';
 }
 function merchantKey(c){return String(c.merchant||'').toLowerCase().trim()+'|'+c.currency}
 function monthlyModel(payments,bills,month,today){
- const current=c=>dateKey(c.date).slice(0,7)===month;
+ const current=c=>(c.transactionDate||dateKey(c.date)).slice(0,7)===month;
  const clean=c=>c&&!c.possibleDuplicateOf&&!['IGNORED'].includes(c.status);
- const paid=c=>clean(c)&&c.kind==='PAYMENT'&&c.status!=='DUE'&&(c.status==='PAID'||c.confidence==='HIGH');
- const made=payments.filter(c=>paid(c)&&current(c)).map(c=>({...c,bucket:'MADE',timelineDate:dateKey(c.date)}));
- const due=[...bills,...payments.filter(c=>c.status==='DUE')].filter(c=>clean(c)&&c.status!=='PAID'&&(c.confidence==='HIGH'||c.status==='DUE')&&(c.dueDate?c.dueDate.slice(0,7)===month:current(c))).map(c=>({...c,bucket:'DUE',timelineDate:c.dueDate||dateKey(c.date)}));
+ const paid=c=>clean(c)&&c.kind==='PAYMENT'&&c.signal!=='CARD_REPAYMENT'&&c.status!=='DUE'&&(c.status==='PAID'||c.confidence==='HIGH');
+ const made=payments.filter(c=>paid(c)&&current(c)).map(c=>({...c,bucket:'MADE',timelineDate:c.transactionDate||dateKey(c.date)}));
+ const due=[...bills,...payments.filter(c=>c.status==='DUE')].filter(c=>clean(c)&&c.status!=='PAID'&&(c.confidence==='HIGH'||c.status==='DUE')&&(current(c)||c.dueDate?.slice(0,7)===month)).map(c=>({...c,bucket:'DUE',timelineDate:c.dueDate||dateKey(c.date)}));
  const observed=new Set([...made,...due].map(merchantKey));
  const history=new Map();
  for(const c of payments.filter(paid)){
@@ -319,7 +353,7 @@ function visiblePayments(items,month){
  return (items||[]).filter(x=>x.kind==='PAYMENT'&&x.analysisVersion===5&&
    x.confidence==='HIGH'&&String(x.date).slice(0,7)===month&&!['IGNORED','DUE'].includes(x.status)&&!x.possibleDuplicateOf);
 }
-const API={inspectEvidence,normalizeFinanceText,isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
+const API={structuredReceipt,inspectEvidence,normalizeFinanceText,isFinancialUpdate,monthBounds,dateKey,monthlyQuery,monthlyModel,mergeMonth,pendingGroups,PRIMARY_QUERY,isPrimary,decodeData,htmlToText,parseGmailFull,classifyFullMail,mergePrimary,visiblePayments,currencyAmounts,trimQuoted};
 if(typeof module!=='undefined'&&module.exports)module.exports=API;
 root.LedgerStrict=API;
 })(typeof window!=='undefined'?window:globalThis);

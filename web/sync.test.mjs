@@ -36,11 +36,11 @@ w.fetch=async(url,opts)=>{
  if(u.pathname.endsWith('/profile'))return {ok:true,json:async()=>({emailAddress:'qa@gmail.com'})};
  if(u.pathname.endsWith('/messages')){
    assert.equal(u.searchParams.get('labelIds'),null);
-   if(u.searchParams.get('q').includes('category:updates'))return {ok:true,json:async()=>({messages:[{id:'update'}]})};
+   const combined=u.searchParams.get('q').includes('category:updates');
    assert(u.searchParams.get('q').includes('category:primary'));
    assert(!u.searchParams.get('q').includes('in:anywhere'));
    assert(u.searchParams.get('q').includes('after:'));assert(u.searchParams.get('q').includes('before:'));
-   return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp','fallback'].map(id=>({id})),nextPageToken:'page2'})};
+   return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp','fallback',...(combined?['update']:[])].map(id=>({id})),nextPageToken:'page2'})};
  }
  const id=u.pathname.match(/\/messages\/([^/]+)$/)?.[1];
  assert.equal(u.searchParams.get('format'),'full','all financial parsing must inspect full message body');

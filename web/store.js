@@ -15,7 +15,7 @@ function snapshot(data){
  });
  const cleanCandidate=c=>{
    const x={};
-   for(const key of ['key','messageId','merchant','subject','date','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion','signal','evidenceLevel','reference','confidence','why']){
+   for(const key of ['key','messageId','merchant','subject','date','transactionDate','currency','category','kind','status','evidence','source','dueDate','possibleDuplicateOf','reviewedAt','suggestedStatus','reviewSuggestion','signal','evidenceLevel','reference','confidence','why']){
      const value=c[key];x[key]=value==null?null:String(value).slice(0,key==='source'?650:450);
    }
    x.analysisVersion=Number(c.analysisVersion)||0;
@@ -28,7 +28,7 @@ function snapshot(data){
  const bills=(Array.isArray(data.bills)?data.bills:[]).filter(c=>c&&c.key).map(cleanCandidate);
  const legacy=(Array.isArray(data.legacy)?data.legacy:[]).slice(0,500).map(cleanCandidate);
  return {version:5,email,updatedAt:new Date().toISOString(),lastSync:String(data.lastSync||'').slice(0,35),
-    messages,payments,bills,legacy,selectedMonth:/^\d{4}-(0[1-9]|1[0-2])$/.test(data.selectedMonth||'')?data.selectedMonth:null,includeUpdates:data.includeUpdates===true,coverage:Object.fromEntries(Object.entries(data.coverage||{}).filter(([k,v])=>/^\d{4}-(0[1-9]|1[0-2])$/.test(k)&&v&&typeof v==='object').map(([k,v])=>[k,{complete:v.complete===true,scanned:Number(v.scanned)||0,accepted:Number(v.accepted)||0,skipped:Number(v.skipped)||0,unreadable:Number(v.unreadable)||0,failed:Number(v.failed)||0,reasons:Object.fromEntries(Object.entries(v.reasons||{}).filter(([k,n])=>typeof n==='number'&&Number.isFinite(n)).slice(0,30)),updatedAt:String(v.updatedAt||'').slice(0,35),includeUpdates:v.includeUpdates===true}]))};
+    messages,payments,bills,legacy,selectedMonth:/^\d{4}-(0[1-9]|1[0-2])$/.test(data.selectedMonth||'')?data.selectedMonth:null,includeUpdates:data.includeUpdates===true,coverage:Object.fromEntries(Object.entries(data.coverage||{}).filter(([k,v])=>/^\d{4}-(0[1-9]|1[0-2])$/.test(k)&&v&&typeof v==='object').map(([k,v])=>[k,{build:Number(v.build)||0,complete:v.complete===true,scanned:Number(v.scanned)||0,accepted:Number(v.accepted)||0,skipped:Number(v.skipped)||0,unreadable:Number(v.unreadable)||0,failed:Number(v.failed)||0,reasons:Object.fromEntries(Object.entries(v.reasons||{}).filter(([k,n])=>typeof n==='number'&&Number.isFinite(n)).slice(0,30)),updatedAt:String(v.updatedAt||'').slice(0,35),includeUpdates:v.includeUpdates===true}]))};
 }
 function db(){
  if(dbPromise)return dbPromise;

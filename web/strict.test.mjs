@@ -95,3 +95,13 @@ const review=ev('Your invoice','Invoice number 12345\nTotal: $285.00');
 assert(review.candidate&&review.candidate.confidence==='REVIEW');
 assert.equal(ev('Monthly statement','Amount due: $150.00').candidate.kind,'BILL');
 console.log('Independent evidence pass, Unicode, localized amount, and review fallback tests passed');
+
+const structured=(subject,body)=>S.structuredReceipt(S.parseGmailFull(msg('shape',subject,body,['CATEGORY_UPDATES']),true),true);
+assert.equal(structured('Your receipt from Example LLC','Receipt #12345\n\nAmount paid\n\n$28.50\n\nDate paid\n\nNovember 8, 2026\n\nPayment method\n\nCard').amount,28.50);
+assert.equal(structured('Your Tickets','Booking ID ABCDEF\nCheck discounts and deals\nORDER SUMMARY\nRs.100.00\nAMOUNT PAID\nRs.125.00\nPayment Type\nUPI').amount,125);
+assert.equal(structured('Toll Receipt','Amount Due: $0.00\nTotal: $8.25\nAmount Charged: $8.25\nBalance Due: $0.00').kind,'PAYMENT');
+const stmt=structured('Credit card statement','Due date: 03 Dec 2026\nTotal amount due\n₹250.00\nMinimum amount due\n₹10.00\nRewards earned');
+assert.equal(stmt.amount,250);assert.equal(stmt.dueDate,'2026-12-03');
+assert.equal(structured('Bill payment successful!','Credit card bill payment\nAmount Paid:\n₹25.00\nPaid Via: upi').signal,'CARD_REPAYMENT');
+assert.equal(S.monthlyModel([], [stmt], '2026-11','2026-11-23').due.length,1);
+console.log('Structured receipt layouts, zero balances, dates and card repayments passed');
