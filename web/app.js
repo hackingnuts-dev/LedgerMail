@@ -1,6 +1,6 @@
 /* LedgerMail v4: explicit state machines, local per-account history, explainable candidate review. */
 'use strict';
-const APP_BUILD=16;
+const APP_BUILD=17;
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPE=SCOPE+' openid email';
 const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStrict;
@@ -150,7 +150,7 @@ function applyAccount(record,email){
  state.payments=Strict.reconcileDuplicates(payments.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)})));
  state.bills=bills.filter(valid).map(c=>({...c,status:E.normalizeStatus(c.status)}));
  state.lastSync=Number(x?.version)>=5?x?.lastSync||null:null;
- state.scanStats=null;state.pageToken=null;state.coverage=Object.fromEntries(Object.entries(x?.coverage||{}).filter(([k,v])=>[14,15].includes(v.build)));state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
+ state.scanStats=null;state.pageToken=null;state.coverage=Object.fromEntries(Object.entries(x?.coverage||{}).filter(([k,v])=>[14,15,17].includes(v.build)));state.includeUpdates=x?.includeUpdates===true;state.selectedMonth=/^\d{4}-(0[1-9]|1[0-2])$/.test(x?.selectedMonth||'')?x.selectedMonth:monthKey(new Date());
  render();updateStorageBanner();
 }
 
@@ -305,13 +305,13 @@ async function syncFinancial(){
  if(state.phase!=='CONNECTED'){toast('Reconnect Gmail to scan this month');route('settings');return}
  requireToken();
  const month=state.selectedMonth,includeUpdates=state.includeUpdates;
- setSyncPhase('RUNNING');render();
+ setSyncPhase('RUNNING');render();el('syncStatus').textContent='Searching Gmail for the selected month…';el('monthCoverage').textContent=el('syncStatus').textContent;
  const generation=state.generation,email=state.email,ctrl=new AbortController();
  state.controller=ctrl;
- let scanned=0,failed=0,skipped=0,unreadable=0;
+ let scanned=0,failed=0,skipped=0,unreadable=0,retrieved=0,cached=0,broadUsed=false;
  const reasons={};const note=r=>{reasons[r]=(reasons[r]||0)+1};
  const prior=state.coverage[month];
- const incremental=[14,15].includes(prior?.build)&&prior.includeUpdates===includeUpdates;
+ const incremental=prior?.build===17&&prior.includeUpdates===includeUpdates;
  const previousIds=incremental?(prior.checkedIds||[]):[];
  const accepted=incremental?[...state.payments,...state.bills].filter(c=>monthKey(c.date)===month&&(includeUpdates||c.evidenceLevel!=='UPDATES_FULL')):[],summaries=[],seen=new Set(previousIds),startedAt=Date.now();
  const valid=()=>generation===state.generation&&state.email===email;
@@ -319,23 +319,27 @@ async function syncFinancial(){
  try{
    if(await checkRelease(false))return;
    if(!active())return;
-   for(const updates of [includeUpdates]){
+   for(const broad of [false,true]){
+     if(broad&&retrieved>0)break;
+     if(broad)broadUsed=true;
+     const updates=includeUpdates;
      let next=null;const pages=new Set();
      do{
        if(!active())return;
-       let path='messages?maxResults=100&q='+encodeURIComponent(Strict.monthlyQuery(month,updates));
+       let path='messages?maxResults=100&q='+encodeURIComponent(Strict.monthlyQuery(month,updates,broad));
        if(next)path+='&pageToken='+encodeURIComponent(next);
        const page=await api(path,ctrl.signal);
        if(!active())return;
-       const ids=[...new Set((page.messages||[]).map(m=>m.id))].filter(id=>!seen.has(id));
+       const listed=[...new Set((page.messages||[]).map(m=>m.id))];retrieved+=listed.length;cached+=listed.filter(id=>seen.has(id)).length;
+       const ids=listed.filter(id=>!seen.has(id));
        for(let i=0;i<ids.length;i+=1){
-         const result=await Promise.allSettled(ids.slice(i,i+1).map(id=>api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)));
+         const result=await Promise.allSettled(ids.slice(i,i+1).map(id=>(async()=>{if(broad){const meta=await api('messages/'+encodeURIComponent(id)+'?format=minimal',ctrl.signal);if(!(Strict.isPrimary(meta.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(meta.labelIds))))return meta;}return api('messages/'+encodeURIComponent(id)+'?format=full',ctrl.signal)})()));
          if(!active())return;
          for(const row of result){
            scanned++;
            if(row.status!=='fulfilled'){failed++;note(row.reason?.code==='GMAIL_RATE_LIMIT'?'Gmail rate limit':'Gmail fetch error');throw row.reason}
            const raw=row.value;
-           if(!(Strict.isPrimary(raw.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(raw.labelIds)))){skipped++;note('Excluded category');continue}
+           if(!(Strict.isPrimary(raw.labelIds)||(includeUpdates&&Strict.isFinancialUpdate(raw.labelIds)))){skipped++;note('Excluded category');seen.add(raw.id);continue}
            if(seen.has(raw.id))continue;
            const m=Strict.parseGmailFull(raw,includeUpdates);
            if(!m){unreadable++;note('No readable message body');continue}
@@ -362,7 +366,7 @@ async function syncFinancial(){
            state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);
            state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);
            state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
-           state.coverage={...state.coverage,[month]:{build:15,checkedIds:[...seen].slice(-10000),complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};
+           state.coverage={...state.coverage,[month]:{build:17,retrieved,cached,broadUsed,checkedIds:[...seen].slice(-10000),complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};
            await saveHistory();
          }
          el('syncStatus').textContent='Checked '+scanned+' emails for '+month+' · '+accepted.length+' financial matches';
@@ -374,7 +378,7 @@ async function syncFinancial(){
      }while(next);
    }
    if(!active())return;
-   const complete=failed===0&&unreadable===0;
+   const complete=failed===0&&unreadable===0&&retrieved>0;
    const retainUpdates=items=>items;
    const oldUpdatePayments=includeUpdates?[]:state.payments.filter(c=>c.evidenceLevel==='UPDATES_FULL'&&monthKey(c.date)===month);
    state.payments=Strict.mergeMonth(retainUpdates(state.payments),accepted.filter(c=>c.kind==='PAYMENT'),month,false);
@@ -384,14 +388,14 @@ async function syncFinancial(){
    if(oldUpdateBills.length)state.bills=Strict.mergePrimary(state.bills,oldUpdateBills,'',false);
    state.messages=[...new Map([...state.messages,...summaries].map(m=>[m.id,m])).values()].slice(-2500);
    state.lastSync=new Date().toISOString();
-   state.coverage={...state.coverage,[month]:{build:15,checkedIds:[...seen].slice(-10000),complete,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:state.lastSync,includeUpdates}};
+   state.coverage={...state.coverage,[month]:{build:17,retrieved,cached,broadUsed,checkedIds:[...seen].slice(-10000),complete,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:state.lastSync,includeUpdates}};
    state.scanStats={scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,completed:complete,month,elapsedMs:Date.now()-startedAt};
    setSyncPhase(complete?'COMPLETE':'PARTIAL');
-   el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+accepted.length+' financial emails found';
+   el('syncStatus').textContent=(complete?'Primary scan complete':'Partial scan')+' · '+month+' · '+retrieved+' emails retrieved · '+cached+' previously checked · '+accepted.length+' financial emails found';
    render();await saveHistory();toast('Month updated: '+accepted.length+' financial emails');
  }catch(err){
    if(!valid())return;
-   if(err.name!=='AbortError'){if(active()){state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);state.coverage={...state.coverage,[month]:{build:15,checkedIds:[...seen].slice(-10000),complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};setSyncPhase('PARTIAL');render();await saveHistory();toast(err.message);return}setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
+   if(err.name!=='AbortError'){if(active()){state.payments=Strict.mergeMonth(state.payments,accepted.filter(c=>c.kind==='PAYMENT'),month,false);state.bills=Strict.mergeMonth(state.bills,accepted.filter(c=>c.kind==='BILL'),month,false);state.coverage={...state.coverage,[month]:{build:17,retrieved,cached,broadUsed,checkedIds:[...seen].slice(-10000),complete:false,scanned,accepted:accepted.length,skipped,unreadable,failed,reasons,updatedAt:new Date().toISOString(),includeUpdates}};setSyncPhase('PARTIAL');render();await saveHistory();toast(err.message);return}setSyncPhase('ERROR');el('syncStatus').textContent=err.message;render();el('monthCoverage').textContent='Scan failed. Saved results retained. '+err.message;toast('Month scan failed: '+err.message)}
  }finally{
    if(valid()){state.controller=null;el('sync').disabled=state.phase!=='CONNECTED';render()}
  }
@@ -562,10 +566,10 @@ function render(){
  el('monthLabel').textContent=new Date(current+'-01T12:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'});
  el('paymentCount').textContent=String(m.made.length);el('billCount').textContent=m.due.length+' notices to check';el('expectedCount').textContent=m.expected.length+' estimates';
  const coverage=state.coverage[current];
- el('scanOutcome').textContent=coverage&&coverage.scanned>0&&coverage.accepted===0?'No payment amounts were accepted. Open the scan explanation above to see why; zero does not mean no spending.':'';
+ el('scanOutcome').textContent=coverage?.retrieved===0?'Gmail returned no messages for this month, even with date-only discovery. Check the connected account and month.':coverage?.cached>0&&coverage.scanned===0?'No new emails to read. Previously checked emails and saved financial results remain.':coverage&&coverage.scanned>0&&coverage.accepted===0?'Emails were retrieved, but none qualified as payment evidence. Open the scan explanation.':'';
  const audit=el('scanAudit');audit.hidden=!coverage?.reasons;const reasonNode=el('scanReasons');reasonNode.replaceChildren();
  for(const [reason,count] of Object.entries(coverage?.reasons||{}).sort((a,b)=>b[1]-a[1])){const row=document.createElement('p');row.textContent=reason+' · '+count;reasonNode.append(row)}
- if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+coverage.scanned+' new candidates checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
+ if(state.syncPhase!=='RUNNING')el('monthCoverage').textContent=coverage&&coverage.includeUpdates===state.includeUpdates?(coverage.complete?'Scan complete':'Partial scan')+' · '+(coverage.retrieved??coverage.scanned)+' emails found · '+(coverage.cached||0)+' previously checked · '+coverage.scanned+' newly checked · '+(coverage.accepted??0)+' financial matches · '+(coverage.skipped??0)+' excluded · '+new Date(coverage.updatedAt).toLocaleDateString()+(coverage.includeUpdates?' · Primary + financial Updates':' · Primary only'):'This month has not been fully scanned. Tap Scan month.';
  const uncertain=[...state.payments,...state.bills].filter(c=>(state.includeUpdates||c.evidenceLevel!=='UPDATES_FULL')&&monthKey(c.date)===current&&c.status==='REVIEW'&&(c.confidence!=='HIGH'||(c.possibleDuplicateOf&&c.duplicateConfirmed!=='yes')));
  el('reviewNudge').hidden=!uncertain.length;el('reviewNudgeCount').textContent=String(uncertain.length);
  timeline(el('recent'),m.entries,timelineFilter);
@@ -667,6 +671,7 @@ el('clear').onclick=async()=>{
  }catch(err){toast('Cannot delete saved history: '+err.message)}
 };
 el('sync').onclick=syncFinancial;
+el('rescanMonth').onclick=()=>{if(state.syncPhase==='RUNNING'){toast('A scan is already running');return}if(state.phase!=='CONNECTED'){toast('Connect Gmail first');return}delete state.coverage[state.selectedMonth];syncFinancial().catch(err=>toast(err.message))};
 el('searchMail').onclick=()=>{state.mailQuery=el('mailSearch').value.trim();state.pageToken=null;loadMail(false)};
 el('mailSearch').onkeydown=e=>{if(e.key==='Enter')el('searchMail').click()};
 el('loadMore').onclick=()=>loadMail(true);

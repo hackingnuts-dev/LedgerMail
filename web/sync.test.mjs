@@ -30,7 +30,7 @@ w.indexedDB=indexedDB;w.scrollTo=()=>{};w.confirm=()=>true;
 w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 w.HTMLDialogElement.prototype.close=function(){this.open=false};
 w.localStorage.setItem('ledgermail.clientId','123456-example.apps.googleusercontent.com');
-const calls=[];let profileAttempts=0,searchAttempts=0;
+const calls=[];let profileAttempts=0,searchAttempts=0,emptyCategory=false;
 w.fetch=async(url,opts)=>{
  const u=new URL(url);calls.push(u.toString());
  if(u.hostname==='openidconnect.googleapis.com'){profileAttempts++;return {ok:true,json:async()=>({email:'qa@gmail.com',email_verified:true})}}
@@ -39,12 +39,15 @@ w.fetch=async(url,opts)=>{
    searchAttempts++;if(searchAttempts===1)return {ok:false,status:403,headers:{get:()=>null},json:async()=>({error:{message:'Quota exceeded for Units per minute per user'}})};
    assert.equal(u.searchParams.get('labelIds'),null);
    const combined=u.searchParams.get('q').includes('category:updates');
-   assert(u.searchParams.get('q').includes('category:primary'));
+   const categorized=u.searchParams.get('q').includes('category:primary');
+   if(emptyCategory&&categorized)return {ok:true,json:async()=>({messages:[]})};
+   if(!categorized){assert(emptyCategory,'date-only discovery used only after empty category search');return {ok:true,json:async()=>({messages:['receipt','ad','update'].map(id=>({id}))})};}
    assert(!u.searchParams.get('q').includes('in:anywhere'));
    assert(u.searchParams.get('q').includes('after:'));assert(u.searchParams.get('q').includes('before:'));
    return {ok:true,json:async()=>u.searchParams.get('pageToken')?({messages:['bill','junk'].map(id=>({id}))}):({messages:['receipt','ad','otp','fallback',...(combined?['update']:[])].map(id=>({id})),nextPageToken:'page2'})};
  }
  const id=u.pathname.match(/\/messages\/([^/]+)$/)?.[1];
+ if(u.searchParams.get('format')==='minimal'){assert(emptyCategory);return {ok:true,json:async()=>({id,labelIds:messages[id].labelIds})}}
  assert.equal(u.searchParams.get('format'),'full','all financial parsing must inspect full message body');
  if(!id||!messages[id])throw new Error('Unexpected Gmail call '+u);
  return {ok:true,json:async()=>messages[id]};
@@ -86,5 +89,19 @@ d.getElementById('includeUpdates').checked=true;d.getElementById('includeUpdates
 d.getElementById('scanMonth').click();
 for(let i=0;i<95;i++){await wait();if(d.getElementById('monthTotal').textContent.includes('$327.00'))break}
 assert(d.getElementById('monthTotal').textContent.includes('$327.00'),'opt-in Updates receipt included');
+emptyCategory=true;
+const beforeFallback=calls.length;d.getElementById('rescanMonth').click();
+for(let i=0;i<120;i++){await wait();if(d.getElementById('syncStatus').textContent.includes('Primary scan complete'))break}
+const fallbackCalls=calls.slice(beforeFallback);
+assert(fallbackCalls.some(x=>x.includes('format=minimal')));
+assert(!fallbackCalls.some(x=>x.includes('/messages/ad?format=full')),'out-of-scope email body not downloaded in fallback');
+assert(d.getElementById('monthCoverage').textContent.includes('3 emails found'));
+assert(d.getElementById('monthTotal').textContent.includes('$327.00'));
+// Incremental re-scan should report cached emails, not zero retrieved.
+const beforeCached=calls.length;d.getElementById('scanMonth').click();
+for(let i=0;i<120;i++){await wait();if(d.getElementById('syncStatus').textContent.includes('Primary scan complete'))break}
+assert(!calls.slice(beforeCached).some(x=>x.includes('format=full')));
+assert(d.getElementById('monthCoverage').textContent.includes('3 previously checked'));
+assert(d.getElementById('scanOutcome').textContent.includes('No new emails'));
 dom.window.close();
 console.log('Full-format Primary-only scan integration passed; promotion/OTP excluded, bill separated, private snapshot saved.');

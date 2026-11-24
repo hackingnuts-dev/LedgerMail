@@ -342,9 +342,9 @@ function monthBounds(month){
  return {start:new Date(y,m-1,1),end:new Date(y,m,1)};
 }
 function dateKey(value){const d=new Date(value);return Number.isFinite(d.getTime())?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}
-function monthlyQuery(month,updates=false){
+function monthlyQuery(month,updates=false,broad=false){
  const b=monthBounds(month);
- return (updates?'{category:primary category:updates}':'category:primary')+' after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash {receipt invoice payment paid charged debited transaction statement bill purchase order booking tickets repayment autopay subscription renewal amount toll refund}';
+ return (broad?'':(updates?'{category:primary category:updates}':'category:primary')+' ')+'after:'+Math.floor(b.start.getTime()/1000)+' before:'+Math.floor(b.end.getTime()/1000)+' -in:spam -in:trash -in:sent -in:drafts';
 }
 function merchantKey(c){return String(c.merchant||'').toLowerCase().trim()+'|'+c.currency}
 function monthlyModel(payments,bills,month,today){

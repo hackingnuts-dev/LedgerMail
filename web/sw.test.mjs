@@ -6,6 +6,6 @@ const caches={open:async()=>({put:async(k,v)=>cache.set(String(k.url||k),v)}),ke
 const fetcher=async(req,opts)=>{const url=String(req.url||req);network.push({url,cache:opts?.cache||req.cache});if(url.includes('styles.css'))throw Error('missing asset');return new Response('ok')};
 vm.runInNewContext(fs.readFileSync('web/sw.js','utf8'),{self,caches,fetch:fetcher,URL,Request,Response,Promise});
 let pending;events.install({waitUntil:p=>pending=p});await pending;assert.equal(skipped,1,'missing core asset must not block activation');
-events.activate({waitUntil:p=>pending=p});await pending;assert.equal(claimed,1);assert.equal(posts[0].build,16);
+events.activate({waitUntil:p=>pending=p});await pending;assert.equal(claimed,1);assert.equal(posts[0].build,17);
 events.fetch({request:new Request('https://example.test/release.json'),respondWith:p=>pending=p});await pending;assert.equal(network.at(-1).cache,'no-store');
 console.log('Service worker installation, activation, and uncached release probe passed');
