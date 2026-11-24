@@ -17,8 +17,9 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/sw.js
-          node --check netlify/functions/mail-core.mjs
+          node --check netlify/lib/mail-core.mjs
           node --check netlify/functions/mail.mjs
           node --check netlify/functions/mail-schedule.mjs
+          node --check netlify/functions/mail-scan-background.mjs
       - name: Build website assets
         run: npm run build
