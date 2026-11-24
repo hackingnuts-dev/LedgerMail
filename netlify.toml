@@ -1,6 +1,6 @@
 [build]
   publish = "web"
-  command = "echo LedgerMail is a static PWA — no build required"
+  command = "node generate-icons.mjs"
 
 [build.environment]
   NODE_VERSION = "22"
@@ -18,9 +18,19 @@
 [[headers]]
   for = "/sw.js"
   [headers.values]
-    Cache-Control = "no-cache"
+    Cache-Control = "no-store, max-age=0, must-revalidate"
 
 [[headers]]
   for = "/index.html"
   [headers.values]
-    Cache-Control = "no-cache, must-revalidate"
+    Cache-Control = "no-store, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/release.json"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0, must-revalidate"

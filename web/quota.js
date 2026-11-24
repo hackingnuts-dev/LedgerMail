@@ -24,6 +24,7 @@ function reserve(entries,units,now,budget=BUDGET,windowMs=WINDOW){
 function classify(status,message,reasons){
  const text=String(message||'')+' '+String(reasons||'');
  if(status===401)return 'auth';
+ if(status===403&&/units per minute per user|total query cost|user.?rate.?limit.?exceeded/i.test(text))return 'quota';
  if(status===403&&/daily.?limit|daily quota|billing|service.disabled|access.not.configured|insufficient.permissions/i.test(text))return 'configuration';
  if(status===429||status===403&&/quota|rate.?limit|resource.exhausted|too many requests/i.test(text))return 'quota';
  if(status>=500)return 'temporary';

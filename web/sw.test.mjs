@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import vm from 'node:vm';
+const events={},cache=new Map(),posts=[];let skipped=0,claimed=0,network=[];
+const self={registration:{scope:'https://example.test/'},location:{origin:'https://example.test'},addEventListener:(n,fn)=>events[n]=fn,skipWaiting:async()=>{skipped++},clients:{claim:async()=>{claimed++},matchAll:async()=>[{postMessage:m=>posts.push(m)}]}};
+const caches={open:async()=>({put:async(k,v)=>cache.set(String(k.url||k),v)}),keys:async()=>['ledgermail-v15','ledgermail-v16','unrelated-cache'],delete:async()=>true,match:async(k)=>cache.get(String(k.url||k))};
+const fetcher=async(req,opts)=>{const url=String(req.url||req);network.push({url,cache:opts?.cache||req.cache});if(url.includes('styles.css'))throw Error('missing asset');return new Response('ok')};
+vm.runInNewContext(fs.readFileSync('web/sw.js','utf8'),{self,caches,fetch:fetcher,URL,Request,Response,Promise});
+let pending;events.install({waitUntil:p=>pending=p});await pending;assert.equal(skipped,1,'missing core asset must not block activation');
+events.activate({waitUntil:p=>pending=p});await pending;assert.equal(claimed,1);assert.equal(posts[0].build,16);
+events.fetch({request:new Request('https://example.test/release.json'),respondWith:p=>pending=p});await pending;assert.equal(network.at(-1).cache,'no-store');
+console.log('Service worker installation, activation, and uncached release probe passed');

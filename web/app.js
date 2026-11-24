@@ -1,5 +1,6 @@
 /* LedgerMail v4: explicit state machines, local per-account history, explainable candidate review. */
 'use strict';
+const APP_BUILD=16;
 const SCOPE='https://www.googleapis.com/auth/gmail.readonly';
 const LOGIN_SCOPE=SCOPE+' openid email';
 const E=window.LedgerEngine, Store=window.LedgerStore, Strict=window.LedgerStrict;
@@ -282,7 +283,7 @@ async function api(path,signal){
      if(errorType==='temporary'&&attempt<2){await gmailWait(1000*Math.pow(2,attempt),signal);continue}
      if(limited){
        const delay=quotaDelay(res,attempt);writeCooldown(account,Math.max(readCooldown(account),Date.now()+delay));
-       const notice='Google temporarily limits Gmail reads. Retrying after cooldown; your account remains connected and saved history is safe.';
+       const notice='Build '+APP_BUILD+': Gmail quota cooldown. Retrying automatically; your account remains connected and saved history is safe.';
        if(state.phase==='VERIFYING')el('authStatus').textContent=notice;
        if(state.syncPhase==='RUNNING'){el('syncStatus').textContent=notice;el('monthCoverage').textContent=notice}
        if(attempt<2)continue;
@@ -316,6 +317,8 @@ async function syncFinancial(){
  const valid=()=>generation===state.generation&&state.email===email;
  const active=()=>valid()&&state.selectedMonth===month&&state.includeUpdates===includeUpdates;
  try{
+   if(await checkRelease(false))return;
+   if(!active())return;
    for(const updates of [includeUpdates]){
      let next=null;const pages=new Set();
      do{
@@ -726,4 +729,40 @@ async function initializeLocalHistory(){
  }
 }
 initializeLocalHistory();
-if('serviceWorker'in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+let updatingRelease=false;
+async function checkRelease(manual=false){
+ if(updatingRelease)return true;
+ if(!('serviceWorker' in navigator)||location.protocol!=='https:')return false;
+ const label=el('runtimeBuild');
+ try{
+   const result=await fetch('./release.json?ts='+Date.now(),{cache:'no-store'});
+   if(!result.ok)throw Error('Release check unavailable');
+   const release=await result.json();
+   if(Number(release.build)>APP_BUILD){
+     updatingRelease=true;
+     if(label)label.textContent='Updating to Build '+release.build+'…';
+     // Bypass old navigation cache with a new URL; do not erase account data.
+     const registrations=await navigator.serviceWorker.getRegistrations();
+     await Promise.allSettled(registrations.map(r=>r.update()));
+     await saveHistory();
+     location.replace('./?build='+release.build);
+     return true;
+   }
+   if(label)label.textContent='Running Build '+APP_BUILD+' · latest version confirmed';
+   if(manual)toast('LedgerMail is up to date: Build '+APP_BUILD);
+ }catch{
+   if(label)label.textContent='Running Build '+APP_BUILD+' · online version check unavailable';
+   if(manual)toast('Could not check for updates. Saved history remains.');
+ }
+ return false;
+}
+el('checkUpdate').onclick=()=>{if(state.syncPhase==='RUNNING'){toast('Finish the current scan before updating');return}checkRelease(true)};
+if('serviceWorker'in navigator&&location.protocol==='https:'){
+ navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(reg=>reg.update()).catch(()=>{});
+ navigator.serviceWorker.addEventListener('message',event=>{
+   if(event.data?.type==='LEDGERMAIL_RELEASE'&&Number(event.data.build)>APP_BUILD&&state.syncPhase!=='RUNNING')checkRelease(false);
+ });
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.syncPhase!=='RUNNING')checkRelease(false)});
+ window.addEventListener('pageshow',()=>{if(state.syncPhase!=='RUNNING')checkRelease(false)});
+}
+

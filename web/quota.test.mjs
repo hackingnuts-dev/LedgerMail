@@ -17,3 +17,5 @@ assert.equal(Q.classify(401,'Invalid token',''),'auth');
 assert.equal(Q.classify(429,'Too many requests',''),'quota');
 assert.equal(Q.classify(503,'Unavailable',''),'temporary');
 console.log('Quota costs, rolling window, and error classification passed');
+
+assert.equal(Q.classify(403,"Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com' for consumer 'project_number:123456'.",'QUOTA_EXCEEDED'),'quota');
