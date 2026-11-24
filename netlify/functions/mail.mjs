@@ -22,7 +22,7 @@ export default async function handler(request){
   if(!id)return err("Gmail connection required",401);
   const account=await loadAccount(id);
   if(!account)return err("Account connection no longer exists",401);
-  if(action==="session")return json({connected:true,email:account.email,lastSync:account.lastSync,lastError:account.lastError,backfillDone:account.backfillDone,mailCount:account.messages.length},{"valueOf":null}.status||200,{"set-cookie":cookie("lm_session",signTicket(id),90*86400)});
+  if(action==="session")return json({connected:true,email:account.email,lastSync:account.lastSync,lastError:account.lastError,backfillDone:account.backfillDone,mailCount:account.messages.length},200,{"set-cookie":cookie("lm_session",signTicket(id),90*86400)});
   if(action==="changes"){
    const since=u.searchParams.get("since")||"";
    const limit=Math.min(150,Math.max(1,Number(u.searchParams.get("limit"))||100));
