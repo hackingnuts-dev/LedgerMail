@@ -25,9 +25,10 @@ export default async function handler(request){
   if(action==="session")return json({connected:true,email:account.email,lastSync:account.lastSync,lastError:account.lastError,backfillDone:account.backfillDone,mailCount:account.messages.length},200,{"set-cookie":cookie("lm_session",signTicket(id),90*86400)});
   if(action==="changes"){
    const since=u.searchParams.get("since")||"";
-   const limit=Math.min(150,Math.max(1,Number(u.searchParams.get("limit"))||100));
-   const messages=account.messages.filter(m=>!since||Number(m.internalDate)>Number(since)).slice(-limit);
-   return json({messages,lastSync:account.lastSync,lastError:account.lastError,backfillDone:account.backfillDone});
+   const limit=Math.min(25,Math.max(1,Number(u.searchParams.get("limit"))||25));
+   const pending=account.messages.filter(m=>!since||Number(m._lmSeq)>Number(since)).sort((a,b)=>Number(a._lmSeq)-Number(b._lmSeq));
+   const messages=pending.slice(0,limit);
+   return json({messages,hasMore:pending.length>limit,lastSync:account.lastSync,lastError:account.lastError,backfillDone:account.backfillDone});
   }
   if(action==="gmail"){
    const path=u.searchParams.get("path")||"";
