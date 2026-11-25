@@ -1,5 +1,5 @@
-const BUILD=17,CACHE='ledgermail-v'+BUILD;
-const CORE=['./index.html','./styles.css?v=17','./quota.js?v=17','./app.js?v=17','./strict.js?v=17','./engine.js?v=17','./store.js?v=17'];
+const BUILD=18,CACHE='ledgermail-v'+BUILD;
+const CORE=['./index.html','./styles.css?v=18','./quota.js?v=18','./app.js?v=18','./strict.js?v=18','./engine.js?v=18','./store.js?v=18'];
 self.addEventListener('install',event=>{
  event.waitUntil((async()=>{
    const cache=await caches.open(CACHE);

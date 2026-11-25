@@ -1,0 +1,13 @@
+{
+  "name": "ledgermail",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node generate-icons.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^9.0.0"
+  },
+  "engines": {"node": ">=22"}
+}
